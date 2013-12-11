@@ -16,7 +16,9 @@ from django.db.models import Sum, Count, Max, Q
 
 from django_materialized_views.models import MaterializedView
 
-class Classifier(models.Model, MaterializedView):
+from sklearn.externals import joblib
+
+class Predictor(models.Model, MaterializedView):
     """
     A general base class for creating an object that takes training samples
     and constructs a model for tagging future samples with one of several
@@ -27,7 +29,7 @@ class Classifier(models.Model, MaterializedView):
         Simple (boolean), multiclass, or multilabel classification?
         http://scikit-learn.org/stable/modules/multiclass.html
         http://scikit-learn.org/stable/auto_examples/plot_multilabel.html
-    2. Should the classifier be trained in a batch or incrementally?
+    2. Should the predictor be trained in a batch or incrementally?
         * How you answer this will potentially have a huge impact on performance
         and which algorithms will be available to you.
         * Batch algorithms tend to be the most accurate but are also usually
@@ -45,7 +47,7 @@ class Classifier(models.Model, MaterializedView):
         merges it into the prior model. Scikits-learn implements this as
         the partial_fit() method on many of its algorithms.
     3. What should be the minimum number of training samples and training
-        accuracy required before the classifier can start making
+        accuracy required before the predictor can start making
         classifications?
     4. What kind of seed training data should be generated?
         e.g. Say you want have N people who you want to detect references
@@ -55,7 +57,7 @@ class Classifier(models.Model, MaterializedView):
         by finding documents containing each person's exact name.
         Of course, there will likely be many exceptions leading, but for most
         people, this seed data will probably generate a useable accuracy.
-        As exceptions are found, they can be manually tagged and the classifier
+        As exceptions are found, they can be manually tagged and the predictor
         retrained accordingly.
     """
     
@@ -69,7 +71,7 @@ class Classifier(models.Model, MaterializedView):
     revise_classifications = True
     
     # The fewest positive training samples needed FOR EACH CLASS
-    # before the classifier can be trained and used for classifying.
+    # before the predictor can be trained and used for classifying.
     min_training_samples = 100
     
     # The minimum empirical classification accuracy needed before classifications
@@ -103,6 +105,50 @@ class Classifier(models.Model, MaterializedView):
 #        blank=True,
 #        null=True,
 #        help_text='The person who will be associated with created records.')
+    
+    training_r2 = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The r2 measure recorded during training.')
+    
+    training_mean_squared_error = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The mean-squared-error measure recorded during training.')
+    
+    training_mean_absolute_error = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The mean-absolute-error measure recorded during training.')
+    
+    training_seconds = models.PositiveIntegerField(blank=True, null=True)
+    
+    testing_r2 = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The r2 measure recorded during testing.')
+    
+    testing_mean_squared_error = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The mean-squared-error measure recorded during testing.')
+    
+    testing_mean_absolute_error = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The mean-absolute-error measure recorded during testing.')
     
     training_accuracy = models.FloatField(
         blank=True,
@@ -138,15 +184,15 @@ class Classifier(models.Model, MaterializedView):
         help_text="The date and time when this classifier last classified.")
     
     #classifier = PickledObjectField(blank=True, null=True)
-    _classifier = models.TextField(
+    _predictor = models.TextField(
         blank=True,
         null=True,
         editable=False,
         db_column='classifier')
     
     @property
-    def classifier(self):
-        data = self._classifier
+    def predictor(self):
+        data = self._predictor
         if data:
             _, fn = tempfile.mkstemp()
             fout = open(fn, 'wb')
@@ -158,15 +204,15 @@ class Classifier(models.Model, MaterializedView):
         else:
             return
         
-    @classifier.setter
-    def classifier(self, v):
+    @predictor.setter
+    def predictor(self, v):
         if v:
             _, fn = tempfile.mkstemp()
             joblib.dump(v, fn, compress=9)
-            self._classifier = b64encode(open(fn, 'rb').read())
+            self._predictor = b64encode(open(fn, 'rb').read())
             os.remove(fn)
         else:
-            self._classifier = None
+            self._predictor = None
     
     empirical_classification_count = models.PositiveIntegerField(
         default=0,
@@ -182,12 +228,30 @@ class Classifier(models.Model, MaterializedView):
         blank=True,
         null=True,
         editable=False,
-        help_text='The empirical accuracy of the classifier predicting the supervisor.')
+        help_text='The empirical accuracy of the predictor predicting the supervisor.')
+    
+    predicted_value = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text='The future value predicted by the algorithm.')
+    
+    predicted_prob = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text='The future value probability by the algorithm.')
+    
+    predicted_score = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text='How well this prediction compares to others.')
     
     fresh = models.NullBooleanField(
         editable=False,
         db_index=True,
-        help_text='If true, indicates this classifier is ready to classify.')
+        help_text='If true, indicates this predictor is ready to classify.')
 
     #@classmethod
     #def create(cls):
@@ -195,9 +259,12 @@ class Classifier(models.Model, MaterializedView):
     class Meta:
         abstract = True
     
+    def create(self, *args, **kwargs):
+        raise NotImplementedError
+    
     def populate(self):
         """
-        Called to bulk create classifiers for each target class.
+        Called to bulk create predictors for each target class.
         """
         raise NotImplementedError
     
@@ -208,7 +275,126 @@ class Classifier(models.Model, MaterializedView):
         
         This should create:
         * the label association
-        * a link to the record storing the classifier instance
+        * a link to the record storing the predictor instance
         """
         raise NotImplementedError
     
+    def train(self):
+        todo
+        
+    def predict(self):
+        todo
+
+class Evolver(models.Model, MaterializedView):
+    """
+    The top level handle for a problem solved by a genetic algorithm.
+    """
+    
+    name = models.CharField(
+        max_length=150,
+        blank=False,
+        null=False,
+        unique=True)
+    
+    active = models.BooleanField(
+        default=True,
+        help_text='If checked, this domain will be automatically evolved.')
+    
+    species_count = models.PositiveIntegerField(
+        default=10,
+        blank=False,
+        null=False,
+        help_text='The number of unique species populations maintained.')
+    
+    species_size = models.PositiveIntegerField(
+        default=10,
+        blank=False,
+        null=False,
+        help_text='The number of organisms created within each species.')
+    
+    epoches = models.PositiveIntegerField(
+        default=0,
+        blank=False,
+        null=False,
+        help_text='The number of epoches thus far evaluated.')
+    
+    class Meta:
+        abstract = True
+        
+    def evaluate(self, gene):
+        """
+        Calculates the fitness of the gene in solving the problem domain.
+        """
+        raise NotImplementedError
+    
+    def crossover(self, geneA, geneB):
+        """
+        Randomly merges the functionality from two genes.
+        Results in the creation of a new gene.
+        The originals remain unmodified.
+        """
+        raise NotImplementedError
+    
+    def mutate(self, gene):
+        """
+        Randomly changes a unit of functionality within the gene.
+        Results in the creation of a new species.
+        The original remains unmodified.
+        """
+        raise NotImplementedError
+    
+    def get_operators(self):
+        """
+        Returns a list of operators to use for creating atomic genes.
+        """
+        raise NotImplementedError
+    
+    def get_species(self, gene):
+        """
+        Calculates the closest species the gene belongs to.
+        This should function similar to k-means clustering, in that a gene may
+        switch species if doing so is necessary to maintain a number of
+        balanced populations equal to species_count.
+        """
+        raise NotImplementedError
+
+class Gene(models.Model):
+    """
+    Represents a solution to the problem domain.
+    
+    Instances of this class can exist in two general forms:
+    1. atomic: the gene depends on no other genes
+    2. compound: the gene is a collection of other genes
+    
+    The traditional mutate and crossover functions manipulate this class by:
+    1. creating new atomic genes using a dictionary dependent on the domain
+    2. creating new compound genes from atomic or compound genes
+    
+    Since genes may depend on other genes, fitness is propagated throughout
+    the gene hierarchy. This allows the propagation of genes that may be
+    useless in solving the problem directly but are useful tools when combined
+    with other genes.
+    """
+    
+    #evolver = models.ForeignKey(Evolver, related_name='genes')
+    
+    fitness = models.FloatField(blank=True, null=True)
+    
+    fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True)
+    
+    fitness_pending_externally = models.BooleanField(
+        default=False,
+        help_text='''If checked, means we are waiting for the fitness from an
+            external source.''')
+    
+    species = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        help_text='''The species to which this gene belongs.''')
+    
+    operator = models.TextField(blank=False, null=False)
+    
+    arguments = models.ManyToManyField('self', blank=True)
+    
+    class Meta:
+        abstract = True
