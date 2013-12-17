@@ -7,16 +7,38 @@ import traceback
 from datetime import timedelta
 from base64 import b64encode, b64decode
 import tempfile
+import importlib
+import random
 
 #from picklefield.fields import PickledObjectField
 
+import django
 from django.conf import settings
 from django.db import models
-from django.db.models import Sum, Count, Max, Q
+from django.db.models import Sum, Count, Max, Min, Q
+from django.db.utils import IntegrityError
 
 from django_materialized_views.models import MaterializedView
 
+import constants as c
+
 from sklearn.externals import joblib
+
+str_to_type = {
+    c.GENE_TYPE_INT:int,
+    c.GENE_TYPE_FLOAT:float,
+    c.GENE_TYPE_BOOL:(lambda v: True if v in (True, 'True', 1, '1') else False),
+    c.GENE_TYPE_STR:(lambda v: str(v)),
+}
+
+def obj_to_hash(o):
+    """
+    Returns the 128-character SHA-512 hash of the given object's Pickle
+    representation.
+    """
+    import hashlib
+    import cPickle as pickle
+    return hashlib.sha512(pickle.dumps(o)).hexdigest()
 
 class Predictor(models.Model, MaterializedView):
     """
@@ -358,43 +380,381 @@ class Evolver(models.Model, MaterializedView):
         """
         raise NotImplementedError
 
+_evaluators = {}
+
+def register_evaluator(func):
+    name = get_evaluator_name(func)
+    _evaluators[name] = func
+
+import inspect
+
+def get_class_that_defined_method(meth):
+    if hasattr(meth, 'im_self'):
+        return meth.im_self
+    for cls in inspect.getmro(meth.im_class):
+        print 'cls:',cls
+        if meth.__name__ in cls.__dict__:
+            return cls
+    return None
+
+def get_evaluator_name(func):
+    return get_class_that_defined_method(func).__name__ + '.' +func.func_name
+
+def get_evaluators():
+    for name in sorted(_evaluators.iterkeys()):
+        yield (name, name)
+
+class Genome(models.Model):
+    """
+    All possible parameters of a problem domain.
+    """
+    
+    name = models.CharField(
+        max_length=100,
+        blank=False,
+        null=False,
+        unique=True)
+    
+    evaluator = models.CharField(
+        max_length=1000,
+        choices=get_evaluators(),
+        blank=True,
+        null=True)
+    
+    maximum_population = models.PositiveIntegerField(
+        default=1000,
+        help_text='''The maximum number of genotype records to create.
+            If set to zero, no limit will be enforced.
+            If delete_inferiors is checked, all after this top amount, ordered
+            by fitness, will be deleted.'''
+    )
+    
+    mutation_rate = models.FloatField(
+        default=0.1,
+        blank=False,
+        null=False)
+    
+    epoches = models.PositiveIntegerField(
+        default=0,
+        blank=False,
+        null=False,
+        help_text='The number of epoches thus far evaluated.')
+    
+    delete_inferiors = models.BooleanField(
+        default=False,
+        help_text='''If checked, all but the top fittest genotypes
+            will be deleted. Requires maximum_population to be set to
+            a non-zero value.'''
+    )
+    
+    min_fitness = models.FloatField(blank=True, null=True, editable=False)
+    
+    max_fitness = models.FloatField(blank=True, null=True, editable=False)
+    
+    def __unicode__(self):
+        return self.name
+    
+    def save(self, *args, **kwargs):
+        
+        if self.id:
+            q = self.genotypes.filter(fitness__isnull=False)\
+                .aggregate(Max('fitness'), Min('fitness'))
+            print 'q:',q
+            self.max_fitness = q['fitness__max']
+            self.min_fitness = q['fitness__min']
+            
+        super(Genome, self).save(*args, **kwargs)
+    
+    def get_random_genotype(self):
+        d = []
+        for gene in self.genes.all():
+            d.append((gene, gene.get_random_value()))
+        genotype = Genotype.objects.create(genome=self)
+        GenotypeGene.objects.bulk_create([
+            GenotypeGene(genotype=genotype, gene=gene, _value=str(value))
+            for gene, value in d
+        ])
+        genotype.save()
+        return genotype
+    
+    @property
+    def pending_genotypes(self):
+        return self.genotypes.filter(fitness__isnull=True)
+    
+    def populate(self):
+        """
+        Creates random genotypes until the maximum limit is reached.
+        """
+        max_retries = 10
+        last_pending = None
+        populate_count = 0
+        max_populate_retries = 1000
+        while 1:
+            
+            # Delete failed and/or corrupted genotypes.
+            self.genotypes.filter(fingerprint__isnull=True).delete()
+            
+            #TODO:only look at fitness__isnull=True if maximum_population=0 or delete_inferiors=False?
+            pending = self.pending_genotypes.count()
+            if pending >= self.maximum_population:
+                break
+            
+            # Note, because we don't have a good way of avoiding hash collisons
+            # due to the creation of duplicate genotypes, it's possible we may
+            # not generate unique genotypes within a reasonable amount of time
+            # so we keep track of our failures and stop after too many
+            # attempts.
+            if last_pending is not None and last_pending == pending:
+                populate_count += 1
+                if populate_count > max_populate_retries:
+                    break
+            else:
+                populate_count = 0
+            
+            last_pending = pending
+            for retry in xrange(max_retries):
+                try:
+                    self.get_random_genotype()
+                    #TODO:use crossover and mutation?
+                    break
+                except IntegrityError:
+                    django.db.transaction.rollback()
+                    continue
+                return
+    
+    @property
+    def evaluator_function(self):
+        return _evaluators.get(self.evaluator)
+    
+    def evolve(self):
+        self.populate()
+        print self.evaluator_function
+        for gt in self.pending_genotypes:
+            self.evaluator_function(gt)
+    
+    def crossover(self):
+        todo
+        
+    def mutate(self):
+        todo
+        
+    def evaluate(self):
+        todo
+
 class Gene(models.Model):
     """
-    Represents a solution to the problem domain.
-    
-    Instances of this class can exist in two general forms:
-    1. atomic: the gene depends on no other genes
-    2. compound: the gene is a collection of other genes
-    
-    The traditional mutate and crossover functions manipulate this class by:
-    1. creating new atomic genes using a dictionary dependent on the domain
-    2. creating new compound genes from atomic or compound genes
-    
-    Since genes may depend on other genes, fitness is propagated throughout
-    the gene hierarchy. This allows the propagation of genes that may be
-    useless in solving the problem directly but are useful tools when combined
-    with other genes.
+    Describes a specific configurable settings in a problem domain.
     """
     
-    #evolver = models.ForeignKey(Evolver, related_name='genes')
+    genome = models.ForeignKey(Genome, related_name='genes')
+    
+    name = models.CharField(max_length=100, blank=False, null=False)
+    
+    type = models.CharField(
+        choices=c.GENE_TYPE_CHOICES,
+        max_length=100,
+        blank=False,
+        null=False)
+    
+    values = models.TextField(
+        blank=True,
+        null=True,
+        help_text='''Prefix with "source:" to dynamically load values
+            from a module.''')
+    
+    default = models.CharField(max_length=1000, blank=True, null=True)
+    
+    min_value = models.CharField(max_length=100, blank=True, null=True)
+    
+    max_value = models.CharField(max_length=100, blank=True, null=True)
+    
+    class Meta:
+        unique_together = (
+            ('genome', 'name'),
+        )
+        
+    def __unicode__(self):
+        return self.name
+    
+    def get_random_value(self):
+        values_list = self.get_values_list()
+        if values_list:
+            return random.choice(values_list)
+        elif self.type == c.GENE_TYPE_INT:
+            return random.randint(int(self.min_value), int(self.max_value))
+        elif self.type == c.GENE_TYPE_FLOAT:
+            return random.uniform(float(self.min_value), float(self.max_value))
+        elif self.type == c.GENE_TYPE_BOOL:
+            return random.choice([True,False])
+        elif self.type == c.GENE_TYPE_STR:
+            raise NotImplementedError, \
+                'Cannot generate a random value for a string with no values.'
+    
+    def get_default(self):
+        if self.default is None:
+            return self.get_random_value()
+        return str_to_type[self.type](self.default)
+    
+    def get_values_list(self):
+        values = (self.values or '').strip()
+        if not values:
+            return
+        if values.startswith('source:'):
+            parts = values[7:].split('.')
+            module_path = '.'.join(parts[:-1])
+            var_name = parts[-1]
+            module = importlib.import_module(module_path)
+            lst = getattr(module, var_name)
+        else:
+            lst = values.replace('\n', ',').split(',')
+        assert isinstance(lst, (tuple, list))
+        return [str_to_type[self.type](_) for _ in lst]
+
+class GenotypeManager(models.Manager):
+    
+    def stale(self):
+        return self.filter(fitness__isnull=True)
+
+class Genotype(models.Model):
+    """
+    A specific configuration for solving a problem.
+    """
+    
+    genome = models.ForeignKey(Genome, related_name='genotypes')
+    
+    fingerprint = models.CharField(
+        max_length=700,
+        db_column='fingerprint',
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='''A unique hash calculated from the gene names and values
+            used to detect duplicate genotypes.''')
+    
+    fingerprint_fresh = models.BooleanField(default=False)
+    
+    created = models.DateTimeField(auto_now_add=True)
     
     fitness = models.FloatField(blank=True, null=True)
     
     fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True)
     
-    fitness_pending_externally = models.BooleanField(
-        default=False,
-        help_text='''If checked, means we are waiting for the fitness from an
-            external source.''')
-    
-    species = models.PositiveIntegerField(
-        blank=True,
-        null=True,
-        help_text='''The species to which this gene belongs.''')
-    
-    operator = models.TextField(blank=False, null=False)
-    
-    arguments = models.ManyToManyField('self', blank=True)
+    gene_count = models.PositiveIntegerField(blank=True, null=True)
     
     class Meta:
-        abstract = True
+        #abstract = True
+        unique_together = (
+            ('genome', 'fingerprint'),
+        )
+        pass
+    
+    def __unicode__(self):
+        return (self.fingerprint or u'') or unicode(self.id)
+    
+    def save(self, *args, **kwargs):
+        
+        if self.id:
+            
+            self.gene_count = self.genes.all().count()
+            
+            if not self.fingerprint_fresh:
+                self.fingerprint = obj_to_hash(tuple(sorted(
+                    (gene.gene.name, gene.value)
+                    for gene in self.genes.all())
+                ))
+                self.fingerprint_fresh = True
+        
+        super(Genotype, self).save(*args, **kwargs)
+        self.genome.save()
+        
+    @property
+    def as_dict(self):
+        return dict((gene.name, gene.value) for gene in self.genes.all())
+
+class GenotypeGene(models.Model):
+    
+    genotype = models.ForeignKey(Genotype, related_name='genes')
+    
+    gene = models.ForeignKey(Gene, related_name='genes')
+
+    _value = models.CharField(
+        max_length=1000,
+        db_column='value',
+        verbose_name='value',
+        blank=False,
+        null=False)
+    
+    @property
+    def value(self):
+        if self.gene.type == c.GENE_TYPE_INT:
+            return int(self._value)
+        elif self.gene.type == c.GENE_TYPE_FLOAT:
+            return float(self._value)
+        elif self.gene.type == c.GENE_TYPE_BOOL:
+            if self._value in ('True', '1'):
+                return True
+            return False
+        elif self.gene.type == c.GENE_TYPE_STR:
+            return self._value
+        return self._value
+    
+    @value.setter
+    def value(self, v):
+        if not isinstance(v, c.GENE_TYPES):
+            raise NotImplementedError, 'Unsupported type: %s' % type(v)
+        self._value = str(v)
+    
+    class Meta:
+        ordering = (
+            'gene__name',
+        )
+        unique_together = (
+            ('genotype', 'gene'),
+        )
+        
+    def save(self, *args, **kwargs):
+        super(GenotypeGene, self).save(*args, **kwargs)
+        self.genotype.fingerprint_fresh = False
+        self.genotype.save()
+
+#class Gene(models.Model):
+#    """
+#    Represents a solution to the problem domain.
+#    
+#    Instances of this class can exist in two general forms:
+#    1. atomic: the gene depends on no other genes
+#    2. compound: the gene is a collection of other genes
+#    
+#    The traditional mutate and crossover functions manipulate this class by:
+#    1. creating new atomic genes using a dictionary dependent on the domain
+#    2. creating new compound genes from atomic or compound genes
+#    
+#    Since genes may depend on other genes, fitness is propagated throughout
+#    the gene hierarchy. This allows the propagation of genes that may be
+#    useless in solving the problem directly but are useful tools when combined
+#    with other genes.
+#    """
+#    
+#    #evolver = models.ForeignKey(Evolver, related_name='genes')
+#    
+#    fitness = models.FloatField(blank=True, null=True)
+#    
+#    fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True)
+#    
+#    fitness_pending_externally = models.BooleanField(
+#        default=False,
+#        help_text='''If checked, means we are waiting for the fitness from an
+#            external source.''')
+#    
+#    species = models.PositiveIntegerField(
+#        blank=True,
+#        null=True,
+#        help_text='''The species to which this gene belongs.''')
+#    
+#    operator = models.TextField(blank=False, null=False)
+#    
+#    arguments = models.ManyToManyField('self', blank=True)
+#    
+#    class Meta:
+#        abstract = True

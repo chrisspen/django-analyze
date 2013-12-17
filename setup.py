@@ -6,16 +6,6 @@ import urllib
 
 import django_analyze
 
-def get_reqs(reqs=["Django>=1.4.0", "python-dateutil", "dtree"]):
-    # optparse is included with Python <= 2.7, but has been deprecated in favor
-    # of argparse.  We try to import argparse and if we can't, then we'll add
-    # it to the requirements
-    try:
-        import argparse
-    except ImportError:
-        reqs.append("argparse>=1.1")
-    return reqs
-
 class TestCommand(Command):
     description = "Runs unittests."
     user_options = []
@@ -34,7 +24,7 @@ class TestCommand(Command):
                 cmd = '. %(virtual_env_dir)s/bin/activate; pip install -U %(package)s; deactivate' % args
                 print cmd
                 os.system(cmd)
-        os.system('. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=sense.tests.settings tests; deactivate')
+        os.system('. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings tests; deactivate')
 
 setup(
     name = "django-analyze",
@@ -53,7 +43,7 @@ setup(
         'Programming Language :: Python',
         'Framework :: Django',
     ],
-    install_requires = get_reqs(),
+    install_requires = ["Django>=1.4.0",],
 #    dependency_links = [
 #    ],
 #    cmdclass={
