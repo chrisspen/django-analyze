@@ -9,18 +9,22 @@ class Command(BaseCommand):
     args = '<genome ids>'
     help = ''
     option_list = BaseCommand.option_list + (
-        #make_option('--user', default=1),
-        #make_option('--subject', default='test subject'),
-        #make_option('--recipient_list', default=None),
+        make_option('--genotype_id', default=0),
+        make_option('--no-populate', action='store_true', default=False),
+        #make_option('--production', action='store_true', default=False),
     )
 
     def handle(self, *args, **options):
         ids = [int(_) for _ in args]
         q = models.Genome.objects.filter(id__in=ids)
+        genotype_id = int(options.get('genotype_id', 0))
+        no_populate = options['no_populate']
+        if genotype_id:
+            q = q.filter(genotypes__id=genotype_id)
         total = q.count()
         i = 0
         for genome in q.iterator():
             i += 1
-            print 'Evolving %s (%i of %i)...' % (genome.name, i, total)
-            genome.evolve()
+            print 'Evolving genome %s (%i of %i)...' % (genome.name, i, total)
+            genome.evolve(genotype_id=genotype_id, populate=not no_populate)
             

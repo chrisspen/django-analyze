@@ -9,6 +9,7 @@ from base64 import b64encode, b64decode
 import tempfile
 import importlib
 import random
+from multiprocessing import Process
 
 #from picklefield.fields import PickledObjectField
 
@@ -17,6 +18,7 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Sum, Count, Max, Min, Q
 from django.db.utils import IntegrityError
+from django.utils import timezone
 
 from django_materialized_views.models import MaterializedView
 
@@ -39,6 +41,74 @@ def obj_to_hash(o):
     import hashlib
     import cPickle as pickle
     return hashlib.sha512(pickle.dumps(o)).hexdigest()
+
+class TimedProcess(Process):
+    """
+    Helper to allow us to time a specific process and determine when
+    it has reached a timeout.
+    """
+    
+    daemon = True
+    
+    def __init__(self, max_seconds, objective=True, fout=None, *args, **kwargs):
+        super(TimedProcess, self).__init__(*args, **kwargs)
+        self.fout = fout or sys.stdout
+        self.objective = objective
+        self.t0 = time.clock()
+        self.t0_objective = time.time()
+        self.max_seconds = float(max_seconds)
+        self.t1 = None
+        self.t1_objective = None
+    
+    @property
+    def duration_seconds(self):
+        if self.objective:
+            if self.t1_objective is not None:
+                return self.t1_objective - self.t0_objective
+            return time.time() - self.t0_objective
+        else:
+            if self.t1 is not None:
+                return self.t1 - self.t0
+            return time.clock() - self.t0
+        
+    @property
+    def is_expired(self):
+        if not self.max_seconds:
+            return False
+        return self.duration_seconds >= self.max_seconds
+    
+    @property
+    def seconds_until_timeout(self):
+        return max(self.max_seconds - self.duration_seconds, 0)
+    
+    def start_then_kill(self, verbose=True):
+        """
+        Starts and then kills the process if a timeout occurs.
+        
+        Returns true if a timeout occurred. False if otherwise.
+        """
+        self.start()
+        timeout = False
+        if verbose:
+            print>>self.fout
+            print>>self.fout
+        while 1:
+            time.sleep(1)
+            if verbose:
+                print>>self.fout, '\r\t%.0f seconds until timeout.' \
+                    % (self.seconds_until_timeout,),
+                self.fout.flush()
+            if not self.is_alive():
+                break
+            elif self.is_expired:
+                if verbose:
+                    print>>self.fout
+                    print>>self.fout, 'Attempting to terminate expired process %s...' % (self.pid,)
+                timeout = True
+                self.terminate()
+        self.t1 = time.clock()
+        self.t1_objective = time.time()
+        return timeout
 
 class Predictor(models.Model, MaterializedView):
     """
@@ -149,7 +219,18 @@ class Predictor(models.Model, MaterializedView):
         editable=False,
         help_text='The mean-absolute-error measure recorded during training.')
     
-    training_seconds = models.PositiveIntegerField(blank=True, null=True)
+    training_seconds = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        help_text='The number of CPU seconds the algorithm spent training.')
+    
+    training_ontime = models.BooleanField(
+        default=True,
+        blank=False,
+        null=False,
+        help_text='''If false, indicates this predicator failed to train within
+            the allotted time, and so it is not suitable for use.''',
+    )
     
     testing_r2 = models.FloatField(
         blank=True,
@@ -380,12 +461,6 @@ class Evolver(models.Model, MaterializedView):
         """
         raise NotImplementedError
 
-_evaluators = {}
-
-def register_evaluator(func):
-    name = get_evaluator_name(func)
-    _evaluators[name] = func
-
 import inspect
 
 def get_class_that_defined_method(meth):
@@ -397,11 +472,26 @@ def get_class_that_defined_method(meth):
             return cls
     return None
 
-def get_evaluator_name(func):
+def get_method_name(func):
     return get_class_that_defined_method(func).__name__ + '.' +func.func_name
+
+_evaluators = {}
+_modeladmin_extenders = {}
+
+def register_evaluator(func):
+    name = get_method_name(func)
+    _evaluators[name] = func
+
+def register_modeladmin_extender(func):
+    name = get_method_name(func)
+    _modeladmin_extenders[name] = func
 
 def get_evaluators():
     for name in sorted(_evaluators.iterkeys()):
+        yield (name, name)
+
+def get_extenders():
+    for name in sorted(_modeladmin_extenders.iterkeys()):
         yield (name, name)
 
 class Genome(models.Model):
@@ -419,7 +509,15 @@ class Genome(models.Model):
         max_length=1000,
         choices=get_evaluators(),
         blank=True,
+        help_text='The method to use to evaluate genotype fitness.',
         null=True)
+    
+#    admin_extender = models.CharField(#TODO:remove?
+#        max_length=1000,
+#        choices=get_extenders(),
+#        blank=True,
+#        help_text='Method to call to selectively extend the admin interface.',
+#        null=True)
     
     maximum_population = models.PositiveIntegerField(
         default=1000,
@@ -433,6 +531,19 @@ class Genome(models.Model):
         default=0.1,
         blank=False,
         null=False)
+    
+    evaluation_timeout = models.PositiveIntegerField(
+        default=0,
+        blank=False,
+        null=False,
+        help_text='''The number of seconds to the genotype will allow
+            training before forcibly terminating the process.<br/>
+            A value of zero means no timeout will be enforced.<br/>
+            Note, it's up to the genotype evaluator how this timeout is
+            interpreted.
+            If a genotype runs multiple evaluation methods internally, this
+            may be used on each individual method, not the overall evaluation.
+        ''')
     
     epoches = models.PositiveIntegerField(
         default=0,
@@ -459,7 +570,6 @@ class Genome(models.Model):
         if self.id:
             q = self.genotypes.filter(fitness__isnull=False)\
                 .aggregate(Max('fitness'), Min('fitness'))
-            print 'q:',q
             self.max_fitness = q['fitness__max']
             self.min_fitness = q['fitness__min']
             
@@ -479,7 +589,7 @@ class Genome(models.Model):
     
     @property
     def pending_genotypes(self):
-        return self.genotypes.filter(fitness__isnull=True)
+        return self.genotypes.filter(fresh=False)
     
     def populate(self):
         """
@@ -489,6 +599,7 @@ class Genome(models.Model):
         last_pending = None
         populate_count = 0
         max_populate_retries = 1000
+        print 'Populating genotypes...'
         while 1:
             
             # Delete failed and/or corrupted genotypes.
@@ -510,6 +621,8 @@ class Genome(models.Model):
                     break
             else:
                 populate_count = 0
+            print '\t\rAttempt %i of %i to create %i, currently %i' % (populate_count, max_populate_retries, self.maximum_population, pending),
+            sys.stdout.flush()
             
             last_pending = pending
             for retry in xrange(max_retries):
@@ -525,12 +638,27 @@ class Genome(models.Model):
     @property
     def evaluator_function(self):
         return _evaluators.get(self.evaluator)
+    @property
+    def admin_extender_function(self):
+        return _modeladmin_extenders.get(self.admin_extender)
     
-    def evolve(self):
-        self.populate()
-        print self.evaluator_function
-        for gt in self.pending_genotypes:
+    def evolve(self, genotype_id=None, populate=True):
+        
+        # Creates the initial genotypes.
+        if populate:
+            self.populate()
+        
+        #print self.evaluator_function
+        q = self.pending_genotypes
+        if genotype_id:
+            q = q.filter(id=genotype_id)
+        total = q.count()
+        print '%i pending genotypes found.' % (total,)
+        for gt in q.iterator():
             self.evaluator_function(gt)
+            gt.fitness_evaluation_datetime = timezone.now()
+            gt.fresh = True
+            gt.save()
     
     def crossover(self):
         todo
@@ -634,13 +762,33 @@ class Genotype(models.Model):
     
     fingerprint_fresh = models.BooleanField(default=False)
     
-    created = models.DateTimeField(auto_now_add=True)
+    created = models.DateTimeField(auto_now_add=True, editable=False)
     
-    fitness = models.FloatField(blank=True, null=True)
+    fitness = models.FloatField(blank=True, null=True, editable=False)
     
-    fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True)
+    fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True, editable=False)
     
-    gene_count = models.PositiveIntegerField(blank=True, null=True)
+    mean_evaluation_seconds = models.PositiveIntegerField(blank=True, null=True, editable=False)
+    
+    mean_absolute_error = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='''The mean-absolute-error measure recorded during
+            fitness evaluation.''')
+    
+    gene_count = models.PositiveIntegerField(
+        verbose_name='genes',
+        blank=True,
+        null=True,
+        editable=False)
+    
+    fresh = models.BooleanField(
+        default=False,
+        #editable=False,
+        db_index=True,
+        help_text='If true, indicates this predictor is ready to classify.')
     
     class Meta:
         #abstract = True
@@ -667,6 +815,9 @@ class Genotype(models.Model):
         
         super(Genotype, self).save(*args, **kwargs)
         self.genome.save()
+        
+    def getattr(self, name):
+        return self.genes.filter(gene__name=name)[0].value
         
     @property
     def as_dict(self):
