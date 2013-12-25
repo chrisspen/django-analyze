@@ -11,6 +11,7 @@ class Command(BaseCommand):
     option_list = BaseCommand.option_list + (
         make_option('--genotype_id', default=0),
         make_option('--no-populate', action='store_true', default=False),
+        make_option('--no-evaluate', action='store_true', default=False),
         #make_option('--production', action='store_true', default=False),
     )
 
@@ -19,6 +20,7 @@ class Command(BaseCommand):
         q = models.Genome.objects.filter(id__in=ids)
         genotype_id = int(options.get('genotype_id', 0))
         no_populate = options['no_populate']
+        no_evaluate = options['no_evaluate']
         if genotype_id:
             q = q.filter(genotypes__id=genotype_id)
         total = q.count()
@@ -26,5 +28,8 @@ class Command(BaseCommand):
         for genome in q.iterator():
             i += 1
             print 'Evolving genome %s (%i of %i)...' % (genome.name, i, total)
-            genome.evolve(genotype_id=genotype_id, populate=not no_populate)
+            genome.evolve(
+                genotype_id=genotype_id,
+                populate=not no_populate,
+                evaluate=not no_evaluate)
             
