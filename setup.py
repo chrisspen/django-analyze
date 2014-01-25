@@ -1,30 +1,85 @@
- 
-from setuptools import setup, find_packages, Command
-
+import sys
 import os
-import urllib
+
+from setuptools import setup, find_packages, Command
 
 import django_analyze
 
+def get_reqs():
+    return [
+        'Django>=1.4.0',
+        #'django_materialized_views',
+        
+        'django-materialized-views>=0.2.0',
+        'django-admin-steroids>=0.1.13',
+        
+        'psutil',
+        
+        'numpy', # required by scikit-learn
+        'scipy', # required by scikit-learn, takes a long time to build
+        'scikit-learn',
+    ]
+
+package_lookup = {
+    'django-materialized-views>=0.2.0': 'https://github.com/chrisspen/django-materialized-views/archive/django-materialized-views-0.2.0.tar.gz#egg=django-materialized-views-0.2.0',
+    'django-admin-steroids>=0.1.13': 'https://github.com/chrisspen/django-admin-steroids/archive/django-admin-steroids-0.1.13.tar.gz#egg=django-admin-steroids-0.1.13',
+}
+
 class TestCommand(Command):
     description = "Runs unittests."
-    user_options = []
+    user_options = [
+        ('name=', None,
+         'Name of the specific test to run.'),
+        ('package=', None,
+         'Name of the specific package to install.'),
+        ('virtual-env-dir=', None,
+         'The location of the virtual environment to use.'),
+        ('upgrade=', '1',
+         'Upgrade package in virtual environment.'),
+        ('virtonly=', '0',
+         'If specified, only modifies the test virtual environment and does not run any tests.'),
+        ('forcevirt=', '0',
+         'If specified, forcibly reinstalls packages in the virtual environment.'),
+    ]
     def initialize_options(self):
-        pass
+        self.name = None
+        self.package = None
+        self.virtual_env_dir = './.env'
+        self.upgrade = 1
+        self.virtonly = 0
+        self.forcevirt = 0
     def finalize_options(self):
-        pass
+        self.package = (self.package or '').strip()
+        self.upgrade = int(self.upgrade)
+        self.virtonly = int(self.virtonly)
+        self.forcevirt = int(self.forcevirt)
     def run(self):
         args = dict(
-            virtual_env_dir = './.env',
+            virtual_env_dir=self.virtual_env_dir,
+            upgrade_str = '-U' if self.upgrade else '',
         )
-        if not os.path.isdir(args['virtual_env_dir']):
-            os.system('virtualenv %(virtual_env_dir)s' % args)
+        if self.forcevirt or not os.path.isdir(args['virtual_env_dir']):
+            print 'Virtual environment not found. Initializing.'
+            os.system('virtualenv --no-site-packages %(virtual_env_dir)s' % args)
             for package in get_reqs():
+                if self.package and not package.startswith(self.package):
+                    continue
+                if package in package_lookup:
+                    package = package_lookup[package]
                 args['package'] = package
-                cmd = '. %(virtual_env_dir)s/bin/activate; pip install -U %(package)s; deactivate' % args
+                cmd = '. %(virtual_env_dir)s/bin/activate; pip install %(upgrade_str)s %(package)s; deactivate' % args
                 print cmd
                 os.system(cmd)
-        os.system('. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings tests; deactivate')
+        if self.virtonly:
+            return
+                
+        if self.name:
+            cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings django_analyze.tests.tests.Tests.%s; deactivate' % self.name
+        else:
+            #cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings tests; deactivate'
+            cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings; deactivate'
+        #print cmd
+        os.system(cmd)
 
 setup(
     name = "django-analyze",
@@ -43,10 +98,9 @@ setup(
         'Programming Language :: Python',
         'Framework :: Django',
     ],
-    install_requires = ["Django>=1.4.0",],
-#    dependency_links = [
-#    ],
-#    cmdclass={
-#        'test': TestCommand,
-#    },
+    install_requires = get_reqs(),
+    dependency_links = package_lookup.values(),
+    cmdclass={
+        'test': TestCommand,
+    },
 )

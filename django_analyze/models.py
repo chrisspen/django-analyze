@@ -1,9 +1,9 @@
 
 from base64 import b64encode, b64decode
 from datetime import timedelta
-from multiprocessing import Process
 from StringIO import StringIO
 import gc
+import inspect
 import importlib
 import os
 import random
@@ -50,74 +50,6 @@ def obj_to_hash(o):
     import hashlib
     import cPickle as pickle
     return hashlib.sha512(pickle.dumps(o)).hexdigest()
-
-class TimedProcess(Process):
-    """
-    Helper to allow us to time a specific process and determine when
-    it has reached a timeout.
-    """
-    
-    daemon = True
-    
-    def __init__(self, max_seconds, objective=True, fout=None, *args, **kwargs):
-        super(TimedProcess, self).__init__(*args, **kwargs)
-        self.fout = fout or sys.stdout
-        self.objective = objective
-        self.t0 = time.clock()
-        self.t0_objective = time.time()
-        self.max_seconds = float(max_seconds)
-        self.t1 = None
-        self.t1_objective = None
-    
-    @property
-    def duration_seconds(self):
-        if self.objective:
-            if self.t1_objective is not None:
-                return self.t1_objective - self.t0_objective
-            return time.time() - self.t0_objective
-        else:
-            if self.t1 is not None:
-                return self.t1 - self.t0
-            return time.clock() - self.t0
-        
-    @property
-    def is_expired(self):
-        if not self.max_seconds:
-            return False
-        return self.duration_seconds >= self.max_seconds
-    
-    @property
-    def seconds_until_timeout(self):
-        return max(self.max_seconds - self.duration_seconds, 0)
-    
-    def start_then_kill(self, verbose=True):
-        """
-        Starts and then kills the process if a timeout occurs.
-        
-        Returns true if a timeout occurred. False if otherwise.
-        """
-        self.start()
-        timeout = False
-        if verbose:
-            print>>self.fout
-            print>>self.fout
-        while 1:
-            time.sleep(1)
-            if verbose:
-                print>>self.fout, '\r\t%.0f seconds until timeout.' \
-                    % (self.seconds_until_timeout,),
-                self.fout.flush()
-            if not self.is_alive():
-                break
-            elif self.is_expired:
-                if verbose:
-                    print>>self.fout
-                    print>>self.fout, 'Attempting to terminate expired process %s...' % (self.pid,)
-                timeout = True
-                self.terminate()
-        self.t1 = time.clock()
-        self.t1_objective = time.time()
-        return timeout
 
 class BaseModel(models.Model):
     
@@ -271,6 +203,8 @@ class Predictor(BaseModel, MaterializedView):
         As exceptions are found, they can be manually tagged and the predictor
         retrained accordingly.
     """
+    
+    include_in_batch = False
     
     max_i = 10
     
@@ -507,81 +441,6 @@ class Predictor(BaseModel, MaterializedView):
     def predict(self):
         todo
 
-class Evolver(BaseModel, MaterializedView):
-    """
-    The top level handle for a problem solved by a genetic algorithm.
-    """
-    
-    name = models.CharField(
-        max_length=150,
-        blank=False,
-        null=False,
-        unique=True)
-    
-    active = models.BooleanField(
-        default=True,
-        help_text='If checked, this domain will be automatically evolved.')
-    
-    species_count = models.PositiveIntegerField(
-        default=10,
-        blank=False,
-        null=False,
-        help_text='The number of unique species populations maintained.')
-    
-    species_size = models.PositiveIntegerField(
-        default=10,
-        blank=False,
-        null=False,
-        help_text='The number of organisms created within each species.')
-    
-    epoches = models.PositiveIntegerField(
-        default=0,
-        blank=False,
-        null=False,
-        help_text='The number of epoches thus far evaluated.')
-    
-    class Meta:
-        abstract = True
-        
-    def evaluate(self, gene):
-        """
-        Calculates the fitness of the gene in solving the problem domain.
-        """
-        raise NotImplementedError
-    
-    def crossover(self, geneA, geneB):
-        """
-        Randomly merges the functionality from two genes.
-        Results in the creation of a new gene.
-        The originals remain unmodified.
-        """
-        raise NotImplementedError
-    
-    def mutate(self, gene):
-        """
-        Randomly changes a unit of functionality within the gene.
-        Results in the creation of a new species.
-        The original remains unmodified.
-        """
-        raise NotImplementedError
-    
-    def get_operators(self):
-        """
-        Returns a list of operators to use for creating atomic genes.
-        """
-        raise NotImplementedError
-    
-    def get_species(self, gene):
-        """
-        Calculates the closest species the gene belongs to.
-        This should function similar to k-means clustering, in that a gene may
-        switch species if doing so is necessary to maintain a number of
-        balanced populations equal to species_count.
-        """
-        raise NotImplementedError
-
-import inspect
-
 def get_class_that_defined_method(meth):
     if hasattr(meth, 'im_self'):
         return meth.im_self
@@ -679,9 +538,29 @@ class Genome(BaseModel):
             a non-zero value.''')
     )
     
-    min_fitness = models.FloatField(blank=True, null=True, editable=False)
+    min_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The smallest observed fitness.'))
     
-    max_fitness = models.FloatField(blank=True, null=True, editable=False)
+    max_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The largest observed fitness.'))
+    
+    production_genotype_auto = models.BooleanField(
+        default=False,
+        help_text=_('''If checked, the `production_genotype` will automatically
+            be set to the genotype with the best fitness.'''))
+    
+    production_genotype = models.ForeignKey(
+        'Genotype',
+        related_name='production_genomes',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True)
     
     class Meta:
         verbose_name = _('genome')
@@ -993,7 +872,6 @@ class Genome(BaseModel):
             if not added:
                 break
                 
-    
     def evolve(self, genotype_id=None, populate=True, evaluate=True):
         """
         Runs a single epoch of genotype generation and evaluation.
@@ -1151,6 +1029,10 @@ class Gene(BaseModel):
         return str_to_type[self.type](self.default)
     
     def get_values_list(self):
+        """
+        Returns a list of allowable values for this gene.
+        If gene value starts with "source:<module.func>", will dynamically lookup this list.
+        """
         values = (self.values or '').strip()
         if not values:
             return
@@ -1239,7 +1121,12 @@ class Genotype(models.Model):
         default=False,
         editable=False,
         db_index=True,
-        help_text=_('If true, indicates this predictor is ready to classify.'))
+        help_text=_('If true, indicates this predictor is ready to predict.'))
+    
+    fresh_datetime = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text=_('The timestamp of when this record was made fresh.'))
     
     class Meta:
         #abstract = True
@@ -1482,48 +1369,7 @@ class GenotypeGene(BaseModel):
         print '*'*80
         print 'self.genotype.fresh:',self.genotype.fresh
 
-#TODO:fix signals be sent after inline parent saved
+#TODO:fix signals not being sent after inline parent saved
 from django.db.models import signals
 signals.post_save.connect(GenotypeGene.post_save, sender=GenotypeGene)
 signals.post_delete.connect(GenotypeGene.post_delete, sender=GenotypeGene)
-
-#class Gene(BaseModel):
-#    """
-#    Represents a solution to the problem domain.
-#    
-#    Instances of this class can exist in two general forms:
-#    1. atomic: the gene depends on no other genes
-#    2. compound: the gene is a collection of other genes
-#    
-#    The traditional mutate and crossover functions manipulate this class by:
-#    1. creating new atomic genes using a dictionary dependent on the domain
-#    2. creating new compound genes from atomic or compound genes
-#    
-#    Since genes may depend on other genes, fitness is propagated throughout
-#    the gene hierarchy. This allows the propagation of genes that may be
-#    useless in solving the problem directly but are useful tools when combined
-#    with other genes.
-#    """
-#    
-#    #evolver = models.ForeignKey(Evolver, related_name='genes')
-#    
-#    fitness = models.FloatField(blank=True, null=True)
-#    
-#    fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True)
-#    
-#    fitness_pending_externally = models.BooleanField(
-#        default=False,
-#        help_text='''If checked, means we are waiting for the fitness from an
-#            external source.''')
-#    
-#    species = models.PositiveIntegerField(
-#        blank=True,
-#        null=True,
-#        help_text='''The species to which this gene belongs.''')
-#    
-#    operator = models.TextField(blank=False, null=False)
-#    
-#    arguments = models.ManyToManyField('self', blank=True)
-#    
-#    class Meta:
-#        abstract = True
