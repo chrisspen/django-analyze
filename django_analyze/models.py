@@ -28,6 +28,12 @@ from django.utils.translation import ugettext, ugettext_lazy as _
 
 from django_materialized_views.models import MaterializedView
 
+try:
+    from admin_steroids.utils import StringWithTitle
+    APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
+except ImportError:
+    APP_LABEL = 'django_analyze'
+
 import constants as c
 import utils
 
@@ -563,6 +569,7 @@ class Genome(BaseModel):
         null=True)
     
     class Meta:
+        app_label = APP_LABEL
         verbose_name = _('genome')
         verbose_name_plural = _('genomes')
     
@@ -960,6 +967,7 @@ class Gene(BaseModel):
         null=True)
     
     class Meta:
+        app_label = APP_LABEL
         verbose_name = _('gene')
         verbose_name_plural = _('genes')
         unique_together = (
@@ -1129,7 +1137,7 @@ class Genotype(models.Model):
         help_text=_('The timestamp of when this record was made fresh.'))
     
     class Meta:
-        #abstract = True
+        app_label = APP_LABEL
         verbose_name = _('genotype')
         verbose_name_plural = _('genotypes')
         unique_together = (
@@ -1230,6 +1238,7 @@ class GenotypeGene(BaseModel):
         null=False)
     
     class Meta:
+        app_label = APP_LABEL
         ordering = (
             'gene__name',
         )
