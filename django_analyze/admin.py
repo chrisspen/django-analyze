@@ -88,6 +88,7 @@ class GenomeAdmin(admin.ModelAdmin):
     )
     
     readonly_fields = (
+        'total_possible_genotypes',
         'genotypes_link',
         'max_fitness',
         'min_fitness',
@@ -144,12 +145,14 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'mean_absolute_error',
         'mean_evaluation_seconds',
         'fresh',
+        'valid',
         'fingerprint_bool',
         'generation',
     )
     
     list_filter = (
         'fresh',
+        'valid',
         ('fitness', NullListFilter),
         ('fingerprint', NullListFilter),
     )
@@ -172,6 +175,8 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'fingerprint_bool',
         'fingerprint',
         'fresh',
+        'valid',
+        'error',
 #        'fresh_str',
         'fingerprint_fresh',
     ]
@@ -183,14 +188,27 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     actions = (
         'refresh',
         'check_fingerprint',
+        'reset',
     )
     
     def refresh(self, request, queryset):
-        for obj in queryset:
+        i = 0
+        for obj in queryset.iterator():
+            i += 1
             obj.fresh = False
             obj.save()
+        messages.success(request, '%i genotypes were refreshed.' % i)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     refresh.short_description = 'Refresh selected %(verbose_name_plural)s'
+    
+    def reset(self, request, queryset):
+        i = 0
+        for obj in queryset.iterator():
+            i += 1
+            obj.reset()
+        messages.success(request, '%i genotypes were reset.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    reset.short_description = 'Reset selected %(verbose_name_plural)s'
     
     def check_fingerprint(self, request, queryset):
         """
@@ -229,6 +247,8 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                     'genome',
                     'fingerprint_bool',
                     'fresh',
+                    'valid',
+                    'error',
 #                    'fresh_str',
                     'fingerprint_fresh',
                     'fitness',

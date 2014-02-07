@@ -462,9 +462,14 @@ def get_method_name(func):
 _evaluators = {}
 _modeladmin_extenders = {}
 
-def register_evaluator(func):
-    name = get_method_name(func)
-    _evaluators[name] = func
+def register_evaluator(cls):
+    assert hasattr(cls, 'evaluate_genotype'), \
+        'Class %s does not implement `evaluate_genotype`.' % (cls.__name__,)
+    assert hasattr(cls, 'reset_genotype'), \
+        'Class %s does not implement `reset_genotype`.' % (cls.__name__,)
+    #name = get_method_name(cls)
+    name = cls.__module__ + "." + cls.__name__
+    _evaluators[name] = cls
 
 def register_modeladmin_extender(func):
     name = get_method_name(func)
@@ -493,8 +498,8 @@ class Genome(BaseModel):
         max_length=1000,
         choices=get_evaluators(),
         blank=True,
-        help_text=_('The method to use to evaluate genotype fitness.'),
-        null=True)
+        null=True,
+        help_text=_('The backend to use when evaluating genotype fitness.'))
     
 #    admin_extender = models.CharField(#TODO:remove?
 #        max_length=1000,
@@ -531,11 +536,23 @@ class Genome(BaseModel):
             may be used on each individual method, not the overall evaluation.
         '''))
     
-    epoches = models.PositiveIntegerField(
+    epoche = models.PositiveIntegerField(
         default=0,
         blank=False,
         null=False,
-        help_text=_('The number of epoches thus far evaluated.'))
+        help_text=_('''The number of epoches thus far evaluated. This number
+            will also be used to seed an epoche-specific random number
+            generator for each genotype.'''))
+    
+#    max_species = models.PositiveIntegerField(
+#        default=10,
+#        blank=False,
+#        null=False,
+#        help_text=_('''The number of genotypes clusters to track.'''))
+#    
+#    track_species = models.BooleanField(
+#        default=False,
+#        help_text=_('''If checked, all genotypes will be grouped into one of N clusters.'''))
     
     delete_inferiors = models.BooleanField(
         default=False,
@@ -585,6 +602,15 @@ class Genome(BaseModel):
             self.min_fitness = q['fitness__min']
             
         super(Genome, self).save(*args, **kwargs)
+    
+    def total_possible_genotypes(self):
+        """
+        Calculates the maximum number of unique genotypes given the product
+        of the unique values of all genes.
+        """
+        import operator
+        values = [gene.get_max_value_count() for gene in self.genes.all()]
+        return reduce(operator.mul, values, 1)
     
     def is_allowable_gene(self, priors, next):
         """
@@ -717,6 +743,9 @@ class Genome(BaseModel):
     
     @property
     def pending_genotypes(self):
+        """
+        Returns genotypes that have not yet had their fitness evaluated.
+        """
         return self.genotypes.filter(fresh=False)
     
     @property
@@ -758,6 +787,12 @@ class Genome(BaseModel):
             pending = self.pending_genotypes.count()
             if pending >= self.maximum_population:
                 print 'Maximum unevaluated population has been reached.'
+                break
+            
+            # If there are literally no more unique combinations to find,
+            # then don't bother.
+            if self.genotypes.count() >= self.total_possible_genotypes():
+                print 'Maximum theoretical population has been reached.'
                 break
             
             # Note, because we don't have a good way of avoiding hash collisons
@@ -804,7 +839,11 @@ class Genome(BaseModel):
     
     @property
     def evaluator_function(self):
-        return _evaluators.get(self.evaluator)
+        return _evaluators.get(self.evaluator).evaluate_genotype
+    
+    @property
+    def reset_function(self):
+        return _evaluators.get(self.evaluator).reset_genotype
     
     @property
     def admin_extender_function(self):
@@ -897,24 +936,43 @@ class Genome(BaseModel):
         # Evaluate un-evaluated genotypes.
         if evaluate:
             self.evaluate(genotype_id=genotype_id)
+            if not genotype_id:
+                self.epoche = self.epoche+1
+                type(self).objects.filter(id=self.id).update(epoche=self.epoche)
         
     def evaluate(self, genotype_id=None):
+        """
+        Calculates the fitness of all currently unevaluated genotypes
+        using the genome's linked fitness metric.
+        """
         q = self.pending_genotypes
         if genotype_id:
             q = q.filter(id=genotype_id)
         total = q.count()
         print '%i pending genotypes found.' % (total,)
+        i = 0
         for gt in q.iterator():
+            i += 1
             try:
                 self.evaluator_function(gt)
                 gt.fitness_evaluation_datetime = timezone.now()
                 gt.fresh = True
+                gt.valid = True
+                gt.error = None
                 gt.save()
             except Exception, e:
                 print>>sys.stderr, 'Error evaluating genotype %i.' % (gt.id,)
-                traceback.print_exc(file=sys.stderr)
+                fout = StringIO()
+                traceback.print_exc(file=fout)
+                error = fout.getvalue()
+                print>>sys.stderr, error
                 sys.stderr.flush()
                 django.db.connection.close()
+                Genotype.objects.filter(id=gt.id).update(
+                    fresh=True,
+                    valid=False,
+                    error=error,
+                )
 
 class Gene(BaseModel):
     """
@@ -950,7 +1008,7 @@ class Gene(BaseModel):
         blank=True,
         null=True,
         help_text=re.sub('[\s\n]+', ' ', '''A comma-delimited list of values the gene will be
-            restricted to. Prefix with "source:" to dynamically load values
+            restricted to. Prefix with "source:package.module.attribute" to dynamically load values
             from a module.'''))
     
     default = models.CharField(max_length=1000, blank=True, null=True)
@@ -985,6 +1043,21 @@ class Gene(BaseModel):
         super(Gene, self).save(*args, **kwargs)
         
         #self.genome.genotypes.filter(genes___value=)
+    
+    def get_max_value_count(self):
+        """
+        Returns the number of values this gene can assume.
+        """
+        if self.is_continuous():
+            return 1e999999999999999
+        elif self.values:
+            return len(self.get_values_list())
+        elif self.type == c.GENE_TYPE_BOOL:
+            return 2
+        elif self.type == c.GENE_TYPE_INT and self.min_value and self.max_value:
+            return abs(int(self.min_value) - int(self.max_value))
+        # Otherwise, we're implicitly infinite.
+        return 1e999999999999999
     
     def is_discrete(self):
         if self.type == c.GENE_TYPE_FLOAT and self.values:
@@ -1039,7 +1112,7 @@ class Gene(BaseModel):
     def get_values_list(self):
         """
         Returns a list of allowable values for this gene.
-        If gene value starts with "source:<module.func>", will dynamically lookup this list.
+        If gene value starts with "source:package.module.attribute", will dynamically lookup this list.
         """
         values = (self.values or '').strip()
         if not values:
@@ -1058,7 +1131,7 @@ class Gene(BaseModel):
 class GenotypeManager(models.Manager):
     
     def stale(self):
-        return self.filter(fitness__isnull=True)
+        return self.filter(valid=True, fitness__isnull=True)
     
     def valid(self):
         """
@@ -1066,7 +1139,7 @@ class GenotypeManager(models.Manager):
         (e.g. fresh=True) and has received a fitness rating
         (e.g. fitness is not null).
         """
-        return self.filter(fresh=True, fitness__isnull=False)
+        return self.filter(valid=True, fresh=True, fitness__isnull=False)
 
 class Genotype(models.Model):
     """
@@ -1129,12 +1202,23 @@ class Genotype(models.Model):
         default=False,
         editable=False,
         db_index=True,
-        help_text=_('If true, indicates this predictor is ready to predict.'))
+        help_text=_('If true, indicates this predictor has been evaluated.'))
     
     fresh_datetime = models.DateTimeField(
         blank=True,
         null=True,
         help_text=_('The timestamp of when this record was made fresh.'))
+    
+    valid = models.BooleanField(
+        default=True,
+        #editable=False,
+        db_index=True,
+        help_text=_('If true, indicates this predictor encountered no errors.'))
+    
+    error = models.TextField(
+        blank=True,
+        null=True,
+        help_text=_('Any error message received during evaluation.'))
     
     class Meta:
         app_label = APP_LABEL
@@ -1170,48 +1254,48 @@ class Genotype(models.Model):
         self.fingerprint_fresh = False
         self.save(check_fingerprint=False)
     
-#    def clean(self, check_fingerprint=True, *args, **kwargs):
-#        """
-#        Called to validate fields before saving.
-#        Override this to implement your own model validation
-#        for both inside and outside of admin. 
-#        """
-#        try:
-#            if self.id and check_fingerprint:
-#                fingerprint = self.get_fingerprint()
-#                q = self.genome.genotypes.filter(fingerprint=fingerprint).exclude(id=self.id)
-#                if q.count():
-#                    url = get_admin_change_url(q[0])
-#                    raise ValidationError(mark_safe(('Fingerprint conflicts with '
-#                        '<a href="%s" target="_blank">genotype %i</a>, indicating '
-#                        'one of these genotypes is a duplicate of the other. '
-#                        'Either delete one of these genotypes or change their '
-#                        'gene values so that they differ.') % (url, q[0].id,)))
-#            
-#            super(Genotype, self).clean(*args, **kwargs)
-#        except Exception, e:
+    def clean(self, check_fingerprint=True, *args, **kwargs):
+        """
+        Called to validate fields before saving.
+        Override this to implement your own model validation
+        for both inside and outside of admin. 
+        """
+        try:
+            if self.id and check_fingerprint:
+                fingerprint = self.get_fingerprint()
+                q = self.genome.genotypes.filter(fingerprint=fingerprint).exclude(id=self.id)
+                if q.count():
+                    url = get_admin_change_url(q[0])
+                    raise ValidationError(mark_safe(('Fingerprint conflicts with '
+                        '<a href="%s" target="_blank">genotype %i</a>, indicating '
+                        'one of these genotypes is a duplicate of the other. '
+                        'Either delete one of these genotypes or change their '
+                        'gene values so that they differ.') % (url, q[0].id,)))
+            
+            super(Genotype, self).clean(*args, **kwargs)
+        except Exception, e:
 #            print '!'*80
 #            print e
-#            raise
-#    
-#    def full_clean(self, check_fingerprint=True, *args, **kwargs):
-#        return self.clean(check_fingerprint=check_fingerprint, *args, **kwargs)
+            raise
+
+    def full_clean(self, check_fingerprint=True, *args, **kwargs):
+        return self.clean(check_fingerprint=check_fingerprint, *args, **kwargs)
     
-#    def save(self, check_fingerprint=True, using=None, *args, **kwargs):
-#        
-#        if self.id:
-#            
-#            self.gene_count = self.genes.all().count()
-#            
-#            if check_fingerprint and not self.fingerprint_fresh:
-#                self.fingerprint = self.get_fingerprint()
-#                self.fingerprint_fresh = True
-#                
-##        self.full_clean(check_fingerprint=check_fingerprint)
-#        
-#        super(Genotype, self).save(using=using, *args, **kwargs)
-#        print 'genotype.save().fresh:',self.fresh
-#        self.genome.save()
+    def save(self, check_fingerprint=True, using=None, *args, **kwargs):
+        
+        if self.id:
+            
+            self.gene_count = self.genes.all().count()
+            
+            if check_fingerprint and not self.fingerprint_fresh:
+                self.fingerprint = self.get_fingerprint()
+                self.fingerprint_fresh = True
+                
+        self.full_clean(check_fingerprint=check_fingerprint)
+        
+        super(Genotype, self).save(using=using, *args, **kwargs)
+        #print 'genotype.save().fresh:',self.fresh
+        self.genome.save()
         
     def getattr(self, name):
         return self.genes.filter(gene__name=name)[0].value
@@ -1219,6 +1303,17 @@ class Genotype(models.Model):
     @property
     def as_dict(self):
         return dict((gene.name, gene.value) for gene in self.genes.all())
+    
+    def reset(self):
+        """
+        Modifies this genotype according to the genome's reset backend.
+        """
+        self.genome.reset_function(self)
+        type(self).objects.filter(id=self.id).update(
+            valid=True,
+            fresh=False,
+            error=None,
+        )
 
 class GenotypeGene(BaseModel):
     
@@ -1366,17 +1461,23 @@ class GenotypeGene(BaseModel):
         self.genotype.fresh = False
         self.genotype.fingerprint_fresh = False
         self.genotype.save(check_fingerprint=False)
-        print '?'*80
-        print 'self.genotype.fresh:',self.genotype.fresh
+#        print '?'*80
+#        print 'self.genotype.fresh:',self.genotype.fresh
         
     @staticmethod
     def post_delete(sender, instance, *args, **kwargs):
         self = instance
-        self.genotype.fresh = False
-        self.genotype.fingerprint_fresh = False
-        self.genotype.save(check_fingerprint=False)
-        print '*'*80
-        print 'self.genotype.fresh:',self.genotype.fresh
+        try:
+            # If the genotype gene was deleted but the genotype still exists,
+            # then mark the genotype as stale requiring re-evaluation.
+            genotype = Genotype.objects.get(id=self.genotype.id)
+            genotype.fresh = False
+            genotype.fingerprint_fresh = False
+            genotype.save(check_fingerprint=False)
+        except Genotype.DoesNotExist:
+            # If the genotype gene was deleted because the genotype was
+            # deleted, then do nothing.
+            pass
 
 #TODO:fix signals not being sent after inline parent saved
 from django.db.models import signals

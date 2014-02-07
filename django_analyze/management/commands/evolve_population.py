@@ -7,7 +7,7 @@ from django_analyze import models
 
 class Command(BaseCommand):
     args = '<genome ids>'
-    help = ''
+    help = 'Manages the genetic evolution of one or more genomes.'
     option_list = BaseCommand.option_list + (
         make_option('--genotype_id', default=0),
         make_option('--no-populate', action='store_true', default=False),
@@ -31,5 +31,6 @@ class Command(BaseCommand):
             genome.evolve(
                 genotype_id=genotype_id,
                 populate=not no_populate,
-                evaluate=not no_evaluate)
+                evaluate=not no_evaluate,
+            )
             

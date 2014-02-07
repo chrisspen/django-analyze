@@ -102,17 +102,17 @@ class TimedProcess(Process):
                     if self.t1 is not None:
                         return self.t1 - self.t0
                     self._last_duraction_seconds = time.clock() - self.t0
-        return self._last_duraction_seconds
+        return self._last_duraction_seconds or 0
         
     @property
     def is_expired(self):
         if not self.max_seconds:
             return False
-        return self.duration_seconds >= self.max_seconds
+        return self.get_duration_seconds() >= self.max_seconds
     
     @property
     def seconds_until_timeout(self):
-        return max(self.max_seconds - self.duration_seconds, 0)
+        return max(self.max_seconds - self.get_duration_seconds(), 0)
     
     def start(self, *args, **kwargs):
         super(TimedProcess, self).start(*args, **kwargs)
