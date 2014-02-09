@@ -245,8 +245,8 @@ class Predictor(BaseModel, MaterializedView):
         max_length=100,
         #choices=c.CLASSIFIER_CHOICES,
         #default=c.DEFAULT_CLASSIFIER_NAME,
-        blank=False,
-        null=False)
+        blank=True,
+        null=True)
     
 #    classifying_person = models.ForeignKey(
 #        im_models.Person,
@@ -467,6 +467,8 @@ def register_evaluator(cls):
         'Class %s does not implement `evaluate_genotype`.' % (cls.__name__,)
     assert hasattr(cls, 'reset_genotype'), \
         'Class %s does not implement `reset_genotype`.' % (cls.__name__,)
+    assert hasattr(cls, 'calculate_genotype_fitness'), \
+        'Class %s does not implement `calculate_genotype_fitness`.' % (cls.__name__,)
     #name = get_method_name(cls)
     name = cls.__module__ + "." + cls.__name__
     _evaluators[name] = cls
@@ -497,6 +499,7 @@ class Genome(BaseModel):
     evaluator = models.CharField(
         max_length=1000,
         choices=get_evaluators(),
+        verbose_name=_('backend'),
         blank=True,
         null=True,
         help_text=_('The backend to use when evaluating genotype fitness.'))
@@ -530,10 +533,11 @@ class Genome(BaseModel):
         help_text=_('''The number of seconds to the genotype will allow
             training before forcibly terminating the process.<br/>
             A value of zero means no timeout will be enforced.<br/>
-            Note, it's up to the genotype evaluator how this timeout is
-            interpreted.
-            If a genotype runs multiple evaluation methods internally, this
-            may be used on each individual method, not the overall evaluation.
+            Note, how this value is enforced, if at all, is up to the
+            genotype backend.<br/>
+            e.g. If a genotype runs multiple evaluation methods internally,
+            this may be used on each individual method, not the overall
+            evaluation.
         '''))
     
     epoche = models.PositiveIntegerField(
@@ -584,6 +588,15 @@ class Genome(BaseModel):
         on_delete=models.SET_NULL,
         blank=True,
         null=True)
+    
+    evaluating_part = models.PositiveIntegerField(
+        default=0,
+    )
+    
+    ratio_evaluated = models.FloatField(
+        blank=True,
+        null=True,
+    )
     
     class Meta:
         app_label = APP_LABEL
@@ -846,6 +859,10 @@ class Genome(BaseModel):
         return _evaluators.get(self.evaluator).reset_genotype
     
     @property
+    def calculate_fitness_function(self):
+        return _evaluators.get(self.evaluator).calculate_genotype_fitness
+    
+    @property
     def admin_extender_function(self):
         return _modeladmin_extenders.get(self.admin_extender)
     
@@ -948,17 +965,27 @@ class Genome(BaseModel):
         q = self.pending_genotypes
         if genotype_id:
             q = q.filter(id=genotype_id)
+        
         total = q.count()
         print '%i pending genotypes found.' % (total,)
         i = 0
         for gt in q.iterator():
             i += 1
+            if not genotype_id:
+                type(self).objects.filter(id=self.id).update(
+                    evaluating_part=i-1,
+                    ratio_evaluated=0/float(total),
+                )
             try:
+                t0 = time.time()
                 self.evaluator_function(gt)
+#                print '!'*80
+#                print 'ontime_ratio:',gt.ontime_ratio
                 gt.fitness_evaluation_datetime = timezone.now()
                 gt.fresh = True
                 gt.valid = True
                 gt.error = None
+                gt.total_evaluation_seconds = time.time() - t0
                 gt.save()
             except Exception, e:
                 print>>sys.stderr, 'Error evaluating genotype %i.' % (gt.id,)
@@ -973,6 +1000,12 @@ class Genome(BaseModel):
                     valid=False,
                     error=error,
                 )
+                
+        if not genotype_id:
+            type(self).objects.filter(id=self.id).update(
+                evaluating_part=total,
+                ratio_evaluated=0/float(total),
+            )
 
 class Gene(BaseModel):
     """
@@ -981,7 +1014,10 @@ class Gene(BaseModel):
     
     genome = models.ForeignKey(Genome, related_name='genes')
     
-    name = models.CharField(max_length=100, blank=False, null=False)
+    name = models.CharField(
+        max_length=1000,
+        blank=False,
+        null=False)
     
     dependee_gene = models.ForeignKey(
         'self',
@@ -1013,9 +1049,25 @@ class Gene(BaseModel):
     
     default = models.CharField(max_length=1000, blank=True, null=True)
     
-    min_value = models.CharField(max_length=100, blank=True, null=True)
+    min_value = models.CharField(
+        max_length=100,
+        blank=True, null=True,
+        help_text=_('The minimum value this gene will be allowed to store.'))
     
-    max_value = models.CharField(max_length=100, blank=True, null=True)
+    max_value = models.CharField(
+        max_length=100,
+        blank=True, null=True,
+        help_text=_('The maximum value this gene will be allowed to store.'))
+    
+#    min_value_observed = models.CharField(
+#        max_length=100,
+#        blank=True, null=True,
+#        help_text=_('The minimum value observed for this gene.'))
+#    
+#    max_value_observed = models.CharField(
+#        max_length=100,
+#        blank=True, null=True,
+#        help_text=_('The maximum value observed for this gene.'))
     
     max_increment = models.CharField(
         help_text='''When mutating an integer or float value, this is the
@@ -1184,6 +1236,8 @@ class Genotype(models.Model):
     
     mean_evaluation_seconds = models.PositiveIntegerField(blank=True, null=True, editable=False)
     
+    total_evaluation_seconds = models.PositiveIntegerField(blank=True, null=True, editable=False)
+    
     mean_absolute_error = models.FloatField(
         blank=True,
         null=True,
@@ -1213,7 +1267,39 @@ class Genotype(models.Model):
         default=True,
         #editable=False,
         db_index=True,
-        help_text=_('If true, indicates this predictor encountered no errors.'))
+        help_text=_('''If true, indicates this genotype was evaluted without
+            any fatal errors. Note, other errors may have occurred as reported
+            by the success ratio.'''))
+    
+    total_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('Total number of sub-evaluations to run.'))
+    
+    success_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('Total number of sub-evaluations successfully run.'))
+    
+    ontime_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('Total number of sub-evaluations that ran ontime.'))
+    
+    success_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False)
+    
+    ontime_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False)
     
     error = models.TextField(
         blank=True,
@@ -1281,6 +1367,23 @@ class Genotype(models.Model):
     def full_clean(self, check_fingerprint=True, *args, **kwargs):
         return self.clean(check_fingerprint=check_fingerprint, *args, **kwargs)
     
+    def update_status(self, success_parts, ontime_parts, total_parts):
+        
+        self.total_parts = total_parts
+        self.success_parts = success_parts
+        self.ontime_parts = ontime_parts
+        
+        self.success_ratio = success_parts/float(total_parts) if total_parts else None
+        self.ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
+        
+        type(self).objects.filter(id=self.id).update(
+            total_parts=self.total_parts,
+            success_parts=self.success_parts,
+            ontime_parts=self.ontime_parts,
+            success_ratio=self.success_ratio,
+            ontime_ratio=self.ontime_ratio,
+        )
+    
     def save(self, check_fingerprint=True, using=None, *args, **kwargs):
         
         if self.id:
@@ -1304,6 +1407,16 @@ class Genotype(models.Model):
     def as_dict(self):
         return dict((gene.name, gene.value) for gene in self.genes.all())
     
+    def refresh_fitness(self):
+        """
+        Refreshes fitness calculation.
+        Only necessary to do if the fitness calculation code has been changed
+        and you want to show updated fitness values without re-evaluating
+        the genotypes.
+        """
+        self.genome.calculate_fitness_function(self)
+        type(self).objects.filter(id=self.id).update(fitness=self.fitness)
+    
     def reset(self):
         """
         Modifies this genotype according to the genome's reset backend.
@@ -1313,6 +1426,14 @@ class Genotype(models.Model):
             valid=True,
             fresh=False,
             error=None,
+            total_parts=None,
+            success_parts=None,
+            ontime_parts=None,
+            success_ratio=None,
+            ontime_ratio=None,
+            total_evaluation_seconds=None,
+            mean_evaluation_seconds=None,
+            mean_absolute_error=None,
         )
 
 class GenotypeGene(BaseModel):

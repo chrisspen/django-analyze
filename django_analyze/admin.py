@@ -59,8 +59,8 @@ class GeneInline(
     fields = (
         'name',
         'type',
-        'dependee_gene',
-        'dependee_value',
+#        'dependee_gene',
+#        'dependee_value',
         'values',
         'default',
         'min_value',
@@ -75,9 +75,30 @@ class GeneInline(
         'dependee_gene',
     )
 
+class GeneAdmin(admin.ModelAdmin):
+    
+    list_display = (
+        'name',
+        'genome',
+        'type',
+        'values',
+        'default',
+        'dependee_gene',
+    )
+    
+    search_fields = (
+        'name',
+    )
+    
+    list_filter = (
+        'type',
+    )
+    
+admin.site.register(models.Gene, GeneAdmin)
+
 class GenomeAdmin(admin.ModelAdmin):
     inlines = (
-        GeneInline,
+        #GeneInline,
     )
     
     list_display = (
@@ -90,6 +111,7 @@ class GenomeAdmin(admin.ModelAdmin):
     readonly_fields = (
         'total_possible_genotypes',
         'genotypes_link',
+        'genes_link',
         'max_fitness',
         'min_fitness',
     )
@@ -100,6 +122,16 @@ class GenomeAdmin(admin.ModelAdmin):
         return view_related_link(obj, 'genotypes')
     genotypes_link.allow_tags = True
     genotypes_link.short_description = 'genotypes'
+    
+    def genes_link(self, obj=None):
+        try:
+            if not obj:
+                return ''
+            return view_related_link(obj, 'genes')
+        except Exception, e:
+            return str(e)
+    genes_link.allow_tags = True
+    genes_link.short_description = 'genes'
 
 admin.site.register(models.Genome, GenomeAdmin)
 
@@ -114,6 +146,11 @@ class GenotypeGeneInline(admin.TabularInline):
         'gene',
         '_value',
         'is_legal',
+    )
+    
+    exclude = (
+#        'dependee_gene',
+#        'dependee_value',
     )
     
     readonly_fields = (
@@ -144,10 +181,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'fitness',
         'mean_absolute_error',
         'mean_evaluation_seconds',
+        'total_evaluation_seconds',
+        'success_ratio',
+        'ontime_ratio',
+        'generation',
         'fresh',
         'valid',
         'fingerprint_bool',
-        'generation',
     )
     
     list_filter = (
@@ -171,11 +211,17 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'fitness_evaluation_datetime',
         'mean_evaluation_seconds',
         'mean_absolute_error',
+        'total_evaluation_seconds',
         'gene_count',
         'fingerprint_bool',
         'fingerprint',
         'fresh',
         'valid',
+        'total_parts',
+        'success_parts',
+        'ontime_parts',
+        'success_ratio',
+        'ontime_ratio',
         'error',
 #        'fresh_str',
         'fingerprint_fresh',
@@ -189,6 +235,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'refresh',
         'check_fingerprint',
         'reset',
+        'refresh_fitness',
     )
     
     def refresh(self, request, queryset):
@@ -209,6 +256,15 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         messages.success(request, '%i genotypes were reset.' % i)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     reset.short_description = 'Reset selected %(verbose_name_plural)s'
+    
+    def refresh_fitness(self, request, queryset):
+        i = 0
+        for obj in queryset.iterator():
+            i += 1
+            obj.refresh_fitness()
+        messages.success(request, '%i genotypes had their fitness refreshed.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    refresh_fitness.short_description = 'Refresh fitness of selected %(verbose_name_plural)s'
     
     def check_fingerprint(self, request, queryset):
         """
@@ -254,8 +310,14 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                     'fitness',
                     'fitness_evaluation_datetime',
                     'mean_evaluation_seconds',
+                    'total_evaluation_seconds',
                     'mean_absolute_error',
                     'gene_count',
+                    'total_parts',
+                    'success_parts',
+                    'ontime_parts',
+                    'success_ratio',
+                    'ontime_ratio',
                     'fingerprint',
                 ]
             }),

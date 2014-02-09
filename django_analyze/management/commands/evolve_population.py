@@ -9,7 +9,7 @@ class Command(BaseCommand):
     args = '<genome ids>'
     help = 'Manages the genetic evolution of one or more genomes.'
     option_list = BaseCommand.option_list + (
-        make_option('--genotype_id', default=0),
+        make_option('--genotype-id', default=0),
         make_option('--no-populate', action='store_true', default=False),
         make_option('--no-evaluate', action='store_true', default=False),
         #make_option('--production', action='store_true', default=False),
