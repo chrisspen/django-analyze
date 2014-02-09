@@ -8,7 +8,10 @@ import admin_steroids
 from admin_steroids.utils import view_related_link, classproperty
 from admin_steroids.filters import NullListFilter
 
-class PredictorAdmin(admin.ModelAdmin):
+class BaseModelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
+    pass
+
+class PredictorAdmin(BaseModelAdmin):
     
     list_display = [
         'id',
@@ -75,14 +78,19 @@ class GeneInline(
         'dependee_gene',
     )
 
-class GeneAdmin(admin.ModelAdmin):
+class GeneAdmin(BaseModelAdmin):
     
     list_display = (
         'name',
         'genome',
         'type',
-        'values',
+        'values_str',
         'default',
+        'dependee_gene',
+    )
+    
+    raw_id_fields = (
+        'genome',
         'dependee_gene',
     )
     
@@ -93,6 +101,17 @@ class GeneAdmin(admin.ModelAdmin):
     list_filter = (
         'type',
     )
+    
+    readonly_fields = (
+        'values_str',
+    )
+    
+    def values_str(self, obj=None):
+        if not obj:
+            return
+        return (obj.values or '').replace(',', ', ')
+    values_str.short_description = 'values'
+    values_str.admin_order_field = 'values'
     
 admin.site.register(models.Gene, GeneAdmin)
 
