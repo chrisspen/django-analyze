@@ -965,7 +965,7 @@ class Genome(BaseModel):
     def valid_genotypes(self):
         return Genotype.objects.valid().filter(genome=self)
     
-    def delete_corrupt(self):
+    def delete_corrupt(self, save=True):
         """
         Deletes genotypes without a fingerprint, which should only happen
         because it collided with a duplicate genotype.
@@ -978,8 +978,15 @@ class Genome(BaseModel):
             gt.delete()
         
         # Delete all genotype genes that are illegal.
-        for gt in self.pending_genotypes.iterator():
-            gt.delete_illegal_genes()
+        genotype_ids = set()
+        q = GenotypeGeneIllegal.objects.all().values_list('genotype', flat=True).distinct()
+        total = q.count()
+        if total:
+            print 'Deleting illegal genes from %i genotypes.' % (total,)
+            for gt in q.iterator():
+                gt.delete_illegal_genes(save=save)
+                genotype_ids.add(gt.id)
+        Genotype.mark_stale(genotype_ids, save=save)
     
     def populate(self):
         """
@@ -1066,74 +1073,95 @@ class Genome(BaseModel):
     def admin_extender_function(self):
         return _modeladmin_extenders.get(self.admin_extender)
     
-    def add_missing_genes(self, genotype=None):
-        while 1:
-            added = False
-            
-            # Add missing independent genes.
-            independent_genes = self.genes.filter(dependee_gene__isnull=True)
-            incomplete_genotype_ids = set()
-            #TODO:inefficient, just use simple left outer join instead?
-            for igene in independent_genes:
-                incomplete_genotype_ids.update(Genotype.objects.exclude(genes__gene=igene).values_list('id', flat=True))
-            q = Genotype.objects.filter(id__in=incomplete_genotype_ids)
-            if genotype:
-                q = q.filter(id=genotype.id)
-#            print 'add_missing_genes.q:',q
-#            sys.exit()#TODO:remove
-            for gt in q.iterator():
-                print 'add_missing_genes.current_genes:',gt.genes.all()
-                missing_genes = independent_genes.exclude(id__in=gt.genes.values_list('gene__id', flat=True))
-                print 'add_missing_genes.gt:',missing_genes
-                just_added = False
-                for gene in missing_genes.iterator():
-                    GenotypeGene.objects.get_or_create(genotype=gt, gene=gene, _value=gene.default)#TODO:enforce valid default if values set?
-                    added = True
-                    just_added = True
-                if just_added:
-                    # If we just added genes, we may have changed the
-                    # fingerprint to one that may collide with another
-                    # genotype.
-                    try:
-                        gt.fingerprint_fresh = False
-                        gt.save()
-                    except DatabaseError, e:
-                        print>>sys.stderr, '!'*80
-                        print>>sys.stderr, 'Add missing genes error: %s' % (e,)
-                        sys.stderr.flush()
-                        connection._rollback() # Needed by Postgres.
-            
-            # Add missing dependent genes.
-            dependent_genes = self.genes.filter(dependee_gene__isnull=False)
-            q = self.genotypes.exclude(genes__gene__id__in=dependent_genes.values_list('id', flat=True))
-            if genotype:
-                q = q.filter(id=genotype.id)
-            #print 'q:',q
-            for gt in q.iterator():
-                missing_genes = [
-                    dependent_gene for dependent_gene in dependent_genes.exclude(id__in=gt.genes.values_list('gene__id', flat=True))
-                    if gt.genes.filter(gene=dependent_gene.dependee_gene, _value=dependent_gene.dependee_value).count()]
-                #print 'gt:',missing_genes
-                just_added = False
-                for gene in missing_genes:
-                    GenotypeGene.objects.get_or_create(genotype=gt, gene=gene, _value=gene.default)
-                    added = True
-                    just_added = True
-                if just_added:
-                    # If we just added genes, we may have changed the
-                    # fingerprint to one that may collide with another
-                    # genotype.
-                    try:
-                        gt.fingerprint_fresh = False
-                        gt.save()
-                    except DatabaseError, e:
-                        print>>sys.stderr, '!'*80
-                        print>>sys.stderr, 'Add missing genes error: %s' % (e,)
-                        sys.stderr.flush()
-                        connection._rollback() # Needed by Postgres.
-                
-            if not added:
-                break
+    def add_missing_genes(self, genotype=None, save=True):
+        """
+        Find all genotype gene values that should exist but don't,
+        and creates them.
+        """
+        genotype_ids = set()
+        q = GenotypeGeneMissing.objects.all()
+        if genotype:
+            q = q.filter(genotype=genotype)
+        total = q.count()
+        if total:
+            print 'Adding %i missing gene values.' % (total,)
+            for missing in q.iterator():
+                genotype_ids.add(missing.genotype_id)
+                missing.create()
+            # Check a second time in case we added a dependee gene
+            # which should now catch any missing dependent genes.
+            for missing in q.iterator():
+                genotype_ids.add(missing.genotype_id)
+                missing.create()
+        Genotype.mark_stale(genotype_ids, save=save)
+        
+#        while 1:
+#            added = False
+#            
+#            # Add missing independent genes.
+#            independent_genes = self.genes.filter(dependee_gene__isnull=True)
+#            incomplete_genotype_ids = set()
+#            #TODO:inefficient, just use simple left outer join instead?
+#            for igene in independent_genes:
+#                incomplete_genotype_ids.update(Genotype.objects.exclude(genes__gene=igene).values_list('id', flat=True))
+#            q = Genotype.objects.filter(id__in=incomplete_genotype_ids)
+#            if genotype:
+#                q = q.filter(id=genotype.id)
+##            print 'add_missing_genes.q:',q
+##            sys.exit()#TODO:remove
+#            for gt in q.iterator():
+#                print 'add_missing_genes.current_genes:',gt.genes.all()
+#                missing_genes = independent_genes.exclude(id__in=gt.genes.values_list('gene__id', flat=True))
+#                print 'add_missing_genes.gt:',missing_genes
+#                just_added = False
+#                for gene in missing_genes.iterator():
+#                    GenotypeGene.objects.get_or_create(genotype=gt, gene=gene, _value=gene.default)#TODO:enforce valid default if values set?
+#                    added = True
+#                    just_added = True
+#                if just_added:
+#                    # If we just added genes, we may have changed the
+#                    # fingerprint to one that may collide with another
+#                    # genotype.
+#                    try:
+#                        gt.fingerprint_fresh = False
+#                        gt.save()
+#                    except DatabaseError, e:
+#                        print>>sys.stderr, '!'*80
+#                        print>>sys.stderr, 'Add missing genes error: %s' % (e,)
+#                        sys.stderr.flush()
+#                        connection._rollback() # Needed by Postgres.
+#            
+#            # Add missing dependent genes.
+#            dependent_genes = self.genes.filter(dependee_gene__isnull=False)
+#            q = self.genotypes.exclude(genes__gene__id__in=dependent_genes.values_list('id', flat=True))
+#            if genotype:
+#                q = q.filter(id=genotype.id)
+#            #print 'q:',q
+#            for gt in q.iterator():
+#                missing_genes = [
+#                    dependent_gene for dependent_gene in dependent_genes.exclude(id__in=gt.genes.values_list('gene__id', flat=True))
+#                    if gt.genes.filter(gene=dependent_gene.dependee_gene, _value=dependent_gene.dependee_value).count()]
+#                #print 'gt:',missing_genes
+#                just_added = False
+#                for gene in missing_genes:
+#                    GenotypeGene.objects.get_or_create(genotype=gt, gene=gene, _value=gene.default)
+#                    added = True
+#                    just_added = True
+#                if just_added:
+#                    # If we just added genes, we may have changed the
+#                    # fingerprint to one that may collide with another
+#                    # genotype.
+#                    try:
+#                        gt.fingerprint_fresh = False
+#                        gt.save()
+#                    except DatabaseError, e:
+#                        print>>sys.stderr, '!'*80
+#                        print>>sys.stderr, 'Add missing genes error: %s' % (e,)
+#                        sys.stderr.flush()
+#                        connection._rollback() # Needed by Postgres.
+#                
+#            if not added:
+#                break
                 
     def evolve(self, genotype_id=None, populate=True, evaluate=True):
         """
@@ -1606,6 +1634,7 @@ class Genotype(models.Model):
                 'fresh',
                 'fitness',
             ),
+            ('genome', 'fresh'),
         )
         pass
     
@@ -1620,7 +1649,37 @@ class Genotype(models.Model):
             #for gene in GenotypeGene.objects.filter(genotype__id=self.id)
         ))
     
-    def delete_illegal_genes(self):
+    @classmethod
+    def freshen_fingerprints(cls):
+        """
+        Recalculates the fingerprint for all genotypes with a stale
+        fingerprint.
+        """
+        q = cls.objects.filter(fingerprint_fresh=False)
+        total = q.count()
+        if total:
+            print 'Freshening %i fingerprints.' % (total,)
+            for gt in q.iterator():
+                #TODO:handle fingerprint conflicts?
+                gt.save(check_fingerprint=True)
+    
+    @classmethod
+    def mark_stale(cls, genotype_ids, save=True):
+        """
+        Updates the given genotypes as needing the fitness and fingerprint
+        re-evaluated.
+        """
+        if not genotype_ids:
+            return
+        q = cls.objects.filter(id__in=genotype_ids)
+        for genotype in q.iterator():
+            #TODO:wrap in error handling for fingerprint conflict?
+            genotype.fresh = False
+            genotype.fingerprint_fresh = False
+            if save:
+                genotype.save(check_fingerprint=True)
+    
+    def delete_illegal_genes(self, save=True):
         """
         Deletes genes that aren't allowed to exist according to genome rules.
         """
@@ -1632,7 +1691,8 @@ class Genotype(models.Model):
 #                print 'Deleting illegal genotype gene %s...' % (gene,)
 #                gene.delete()
         self.fingerprint_fresh = False
-        self.save(check_fingerprint=False)
+        if save:
+            self.save(check_fingerprint=False)
     
     def clean(self, check_fingerprint=True, *args, **kwargs):
         """
@@ -1771,7 +1831,62 @@ class GenotypeGeneIllegal(BaseModel):
     class Meta:
         managed = False
         db_table = 'django_analyze_genotypegeneillegal'
+
+class GenotypeGeneMissing(BaseModel):
+    """
+    Wraps the efficient SQL view that detects all missing gene values.
+    """
     
+    gene = models.ForeignKey(
+        'Gene',
+        db_column='gene_id',
+        primary_key=True,
+        blank=False,
+        null=False,
+        editable=False,
+        on_delete=models.DO_NOTHING)
+        
+    genotype = models.ForeignKey(
+        'Genotype',
+        db_column='genotype_id',
+        related_name='missing_gene_values',
+        blank=False,
+        null=False,
+        editable=False,
+        on_delete=models.DO_NOTHING)
+        
+    gene_name = models.CharField(
+        max_length=1000,
+        editable=False)
+    
+    dependee_gene = models.ForeignKey(
+        'Gene',
+        db_column='dependee_gene_id',
+        related_name='missing_dependents',
+        primary_key=True,
+        blank=False,
+        null=False,
+        editable=False,
+        on_delete=models.DO_NOTHING)
+    
+    default = models.CharField(
+        max_length=1000,
+        editable=False)
+    
+    class Meta:
+        managed = False
+        db_table = 'django_analyze_genotypegenemissing'
+        
+    def create(self):
+        GenotypeGene.objects.create(
+            genotype=self.genotype,
+            gene=self.gene,
+            _value=self.default,
+        )
+#        Genotype.objects\
+#            .filter(id=self.genotype_id)\
+#            .update(fingerprint_fresh=False)
+
 class GenotypeGene(BaseModel):
     
     genotype = models.ForeignKey(
@@ -1916,9 +2031,12 @@ class GenotypeGene(BaseModel):
     @staticmethod
     def post_save(sender, instance, *args, **kwargs):
         self = instance
-        self.genotype.fresh = False
-        self.genotype.fingerprint_fresh = False
-        self.genotype.save(check_fingerprint=False)
+        Genotype.objects\
+            .filter(id=self.genotype_id)\
+            .update(fresh=False, fingerprint_fresh=False)
+#        self.genotype.fresh = False
+#        self.genotype.fingerprint_fresh = False
+#        self.genotype.save(check_fingerprint=False)
 #        print '?'*80
 #        print 'self.genotype.fresh:',self.genotype.fresh
         
@@ -1928,10 +2046,13 @@ class GenotypeGene(BaseModel):
         try:
             # If the genotype gene was deleted but the genotype still exists,
             # then mark the genotype as stale requiring re-evaluation.
-            genotype = Genotype.objects.get(id=self.genotype.id)
-            genotype.fresh = False
-            genotype.fingerprint_fresh = False
-            genotype.save(check_fingerprint=False)
+#            genotype = Genotype.objects.get(id=self.genotype.id)
+#            genotype.fresh = False
+#            genotype.fingerprint_fresh = False
+#            genotype.save(check_fingerprint=False)
+            Genotype.objects\
+                .filter(id=self.genotype_id)\
+                .update(fresh=False, fingerprint_fresh=False)
         except Genotype.DoesNotExist:
             # If the genotype gene was deleted because the genotype was
             # deleted, then do nothing.
