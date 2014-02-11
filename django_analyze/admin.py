@@ -87,6 +87,10 @@ class GeneAdmin(BaseModelAdmin):
         'values_str',
         'default',
         'dependee_gene',
+        'dependee_value',
+        'coverage_ratio',
+        'exploration_priority',
+        'mutation_weight',
     )
     
     raw_id_fields = (
@@ -115,6 +119,20 @@ class GeneAdmin(BaseModelAdmin):
     
 admin.site.register(models.Gene, GeneAdmin)
 
+class SpeciesAdmin(admin.ModelAdmin):
+    list_display = (
+        'letter',
+        'genome',
+        'population',
+    )
+    readonly_fields = (
+        'letter',
+        'genome',
+        'population',
+    )
+    
+admin.site.register(models.Species, SpeciesAdmin)
+
 class GenomeAdmin(admin.ModelAdmin):
     inlines = (
         #GeneInline,
@@ -131,9 +149,30 @@ class GenomeAdmin(admin.ModelAdmin):
         'total_possible_genotypes',
         'genotypes_link',
         'genes_link',
+        'species_link',
         'max_fitness',
         'min_fitness',
     )
+    
+    actions = (
+        'organize_species',
+    )
+    
+    def organize_species(self, request, queryset):
+        i = 0
+        for obj in queryset.iterator():
+            i += 1
+            obj.organize_species()
+        messages.success(request, 'Organized species for %i genomes.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    organize_species.short_description = 'Organize species for %(verbose_name_plural)s'
+    
+    def species_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'species')
+    species_link.allow_tags = True
+    species_link.short_description = 'species'
     
     def genotypes_link(self, obj=None):
         if not obj:
@@ -153,6 +192,25 @@ class GenomeAdmin(admin.ModelAdmin):
     genes_link.short_description = 'genes'
 
 admin.site.register(models.Genome, GenomeAdmin)
+
+class GenotypeGeneAdmin(BaseModelAdmin):
+    
+    list_display = (
+        'gene',
+        'genotype',
+        '_value',
+    )
+    
+    list_editable = (
+        '_value',
+    )
+    
+    search_fields = (
+        'gene__name',
+        '_value',
+    )
+
+admin.site.register(models.GenotypeGene, GenotypeGeneAdmin)
 
 class GenotypeGeneInline(admin.TabularInline):
     model = models.GenotypeGene
@@ -191,12 +249,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 #    modeladmin_callbacks = set()
     
     inlines = (
-        GenotypeGeneInline,
+#        GenotypeGeneInline,
     )
     
     list_display = (
         'id',
         'genome',
+        'species',
         'fitness',
         'mean_absolute_error',
         'mean_evaluation_seconds',
@@ -222,11 +281,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     raw_id_fields = (
         'genome',
+        'species',
     )
     
     readonly_fields = [
         'id',
         'fitness',
+        'species',
         'fitness_evaluation_datetime',
         'mean_evaluation_seconds',
         'mean_absolute_error',
@@ -244,6 +305,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'error',
 #        'fresh_str',
         'fingerprint_fresh',
+        'genes_link',
     ]
     
 #    exclude = (
@@ -320,6 +382,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                 'fields': [
                     'id',
                     'genome',
+                    'species',
                     'fingerprint_bool',
                     'fresh',
                     'valid',
@@ -338,6 +401,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                     'success_ratio',
                     'ontime_ratio',
                     'fingerprint',
+                    'genes_link',
                 ]
             }),
         ]
@@ -363,6 +427,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         if not obj:
             return ''
         return view_related_link(obj, 'genotypes')
+    
+    def genes_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'genes')
+    genes_link.short_description = 'gene values'
+    genes_link.allow_tags = True
 
 admin.site.register(models.Genotype, GenotypeAdmin)
 

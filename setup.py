@@ -18,6 +18,7 @@ def get_reqs():
         'numpy', # required by scikit-learn
         'scipy', # required by scikit-learn, takes a long time to build
         'scikit-learn',
+        'django-picklefield',
     ]
 
 package_lookup = {

@@ -12,15 +12,16 @@ import sys
 import tempfile
 import time
 import traceback
+from collections import defaultdict
 
-#from picklefield.fields import PickledObjectField
+from picklefield.fields import PickledObjectField
 
 import django
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, DatabaseError, connection
-from django.db.models import Sum, Count, Max, Min, Q
+from django.db.models import Sum, Count, Max, Min, Q, F
 from django.db.utils import IntegrityError
 from django.utils import timezone
 from django.utils.safestring import mark_safe
@@ -485,6 +486,48 @@ def get_extenders():
     for name in sorted(_modeladmin_extenders.iterkeys()):
         yield (name, name)
 
+class Species(BaseModel):
+    
+    genome = models.ForeignKey(
+        'Genome',
+        related_name='species')
+    
+    index = models.PositiveIntegerField(
+        default=0,
+        db_index=True)
+    
+    centroid = PickledObjectField(blank=True, null=True)
+    
+    population = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        app_label = APP_LABEL
+        verbose_name = _('species')
+        verbose_name_plural = _('species')
+        unique_together = (
+            ('genome', 'index'),
+        )
+        index_together = (
+            ('genome', 'index'),
+        )
+        ordering = ('genome', 'index')
+    
+    def __unicode__(self):
+        return self.letter()
+    
+    def letter(self):
+        if self.index <= 0 or self.index >= 27:
+            return
+        return chr(ord('A')-1+self.index)
+    letter.admin_order_field = 'index'
+    
+    def save(self, *args, **kwargs):
+        if self.id:
+            self.population = self.genotypes.all().count()
+        if not self.index:
+            self.index = self.genome.species.all().count() + 1
+        super(Species, self).save(*args, **kwargs)
+        
 class Genome(BaseModel):
     """
     All possible parameters of a problem domain.
@@ -527,7 +570,7 @@ class Genome(BaseModel):
             during creation of a mutated genotype.'''))
     
     evaluation_timeout = models.PositiveIntegerField(
-        default=0,
+        default=300,
         blank=False,
         null=False,
         help_text=_('''The number of seconds to the genotype will allow
@@ -548,11 +591,31 @@ class Genome(BaseModel):
             will also be used to seed an epoche-specific random number
             generator for each genotype.'''))
     
-#    max_species = models.PositiveIntegerField(
-#        default=10,
-#        blank=False,
-#        null=False,
-#        help_text=_('''The number of genotypes clusters to track.'''))
+    epoches_since_improvement = models.PositiveIntegerField(
+        default=0,
+        blank=False,
+        null=False,
+        editable=False,
+        help_text=_('''The number of epoches since an increase in the maximum
+            fitness was observed.'''))
+    
+    epoche_stall = models.PositiveIntegerField(
+        default=10,
+        blank=False,
+        null=False,
+        editable=False,
+        help_text=_('''The number of epoches to process without seeing
+            a maximum fitness increase before stopping.'''))
+    
+    def stalled(self):
+        return self.epoches_since_improvement >= self.epoche_stall
+    stalled.boolean = True
+    
+    max_species = models.PositiveIntegerField(
+        default=10,
+        blank=False,
+        null=False,
+        help_text=_('''The number of genotype clusters to track.'''))
 #    
 #    track_species = models.BooleanField(
 #        default=False,
@@ -609,12 +672,137 @@ class Genome(BaseModel):
     def save(self, *args, **kwargs):
         
         if self.id:
+            
+            old = type(self).objects.get(id=self.id)
+            
             q = self.genotypes.filter(fitness__isnull=False)\
                 .aggregate(Max('fitness'), Min('fitness'))
             self.max_fitness = q['fitness__max']
             self.min_fitness = q['fitness__min']
-            
+        
+            #TODO:how to handle species that need to be deleted?
+            missing_species = max(0, self.max_species - self.species.all().count())
+            for _ in xrange(missing_species):
+                print 'creating',_
+                species = Species(genome=self)
+                species.save()
+                
+            if self.max_fitness > old.max_fitness:
+                self.epoches_since_improvement = 0
+        
         super(Genome, self).save(*args, **kwargs)
+    
+    def organize_species(self, all=False, **kwargs):
+        """
+        Assigns a species to each genotype.
+        """
+        
+        class Cluster:
+            def __init__(self, species):
+                self.species = species
+                self._centroid = species.centroid or {}
+                self.population = []#list(species.genotypes.all())
+                self.centroid_fresh = True
+                
+            def add(self, genotype):
+                self.centroid_fresh = False
+                self.population.append(genotype)
+                
+            def empty(self):
+                return not bool(len(self.population))
+            
+            def refresh_centroid(self):
+                todo
+                
+            @property
+            def centroid(self):
+                if not self.centroid_fresh:
+                    
+                    # Determine all the unique values for all gene names.
+                    values = defaultdict(list)
+                    for genotype in self.population:
+                        for k,v in genotype.as_dict().iteritems():
+                            values[k].append(v)
+                            
+                    value_counts = {}
+                    for k,v in values.iteritems():
+                        types = list(set(type(_) for _ in v))
+                        assert len(types) == 1, 'Gene %s uses more than two value types: %s' % (k, ', '.join(map(str, types)))
+                        if types[0] in (int, float, bool):
+                            value_counts[k] = sum(v)/float(len(v))
+                        elif types[0] in (str, unicode, basestring):
+                            # Get nominal value used the most.
+                            _counts = defaultdict(int)
+                            for _ in v:
+                                _counts[_] += 1
+                            most_v, most_count = sorted(_counts.iteritems(), key=lambda o:(o[1],o[0]), reverse=True)[0]
+                            value_counts[k] = most_v
+                        else:
+                            raise NotImplementedError, 'Unknown type: %s' % (types[0],)
+                    
+                    for k,v in value_counts.iteritems():
+                        print k,v
+                    self._centroid = value_counts
+                return self._centroid
+            
+            def measure(self, genotype):
+                centroid = self.centroid
+                score = []
+                other_data = genotype.as_dict()
+                for k,v in centroid.iteritems():
+                    other_v = other_data.get(k)
+                    print k,v,other_v
+                    if isinstance(v, (int, float, bool)):
+                        if other_v is None:
+                            other_v = 0
+                        score.append(abs(v-other_v))
+                    elif isinstance(v, basestring):
+                        score.append(v == other_v)
+                    else:
+                        raise NotImplementedError
+                if not score:
+                    return 1e9999999999999
+                return sum(score)/float(len(score))
+                    
+            def save(self):
+                print 'Saving species %s...' % (self.species.letter(),)
+                self.species.centroid = self._centroid
+                for gt in self.population:
+                    gt.species = self.species
+                    gt.save()
+                self.species.save()
+        
+        species = list(self.species.all())
+        assert len(species) >= 2, 'There must be two or more species.'
+        
+        clusters = [Cluster(s) for s in species]
+        empty_clusters = [_ for _ in clusters if _.empty()]
+        
+        q = self.genotypes.all()
+        if not all:
+            q = q.filter(species__isnull=True)
+        pending = list(q)
+        total = len(pending)
+        i = 0
+        while pending:
+            i += 1
+            genotype = pending.pop(0)
+            print 'genotype %s (%i of %i)' % (genotype, i, total)
+            if all or not genotype.species:
+                if empty_clusters:
+                    cluster = empty_clusters.pop(0)
+                    print '%s -> %s' % (genotype, cluster.species.letter())
+                    cluster.add(genotype)
+                else:
+                    scores = []
+                    for cluster in clusters:
+                        scores.append((cluster.measure(genotype), cluster))
+                    measure, cluster = sorted(scores)[0]
+                    cluster.add(genotype)
+                    
+        for cluster in clusters:
+            cluster.save()
+        print 'clusters saved'
     
     def total_possible_genotypes(self):
         """
@@ -623,7 +811,7 @@ class Genome(BaseModel):
         """
         import operator
         values = [gene.get_max_value_count() for gene in self.genes.all()]
-        return reduce(operator.mul, values, 1)
+        return utils.sci_notation(reduce(operator.mul, values, 1))
     
     def is_allowable_gene(self, priors, next):
         """
@@ -643,7 +831,8 @@ class Genome(BaseModel):
         """
         d = {}
         for gene in self.genes.all().order_by('-dependee_gene__id'):
-            self.is_allowable_gene(priors=d, next=gene)
+            if not self.is_allowable_gene(priors=d, next=gene):
+                continue
             d[gene] = gene.get_random_value()
         new_genotype = Genotype(genome=self)
         new_genotype.save(check_fingerprint=False)
@@ -686,22 +875,22 @@ class Genome(BaseModel):
         # Order independent genes first so we don't automatically ignore
         # dependent genes just because we haven't added their dependee yet.
         genes = sorted(all_values.iterkeys(), key=lambda gene: gene.dependee_gene)
-        print
-        print 'new_genotype:',new_genotype
-        print 'genes:',genes
-        print 'all_values:',all_values
+#        print
+#        print 'new_genotype:',new_genotype
+#        print 'genes:',genes
+#        print 'all_values:',all_values
         sys.stdout.flush()
         for gene in genes:
             if not self.is_allowable_gene(priors=priors, next=gene):
                 continue
             new_value = random.choice(all_values[gene])
-            print 'new gene:',gene,new_value
+#            print 'new gene:',gene,new_value
             new_gene = GenotypeGene.objects.create(
                 genotype=new_genotype,
                 gene=gene,
                 _value=new_value)
             priors[gene] = new_value
-        print 'priors:',priors
+#        print 'priors:',priors
         self.add_missing_genes(new_genotype)
         new_genotype.delete_illegal_genes()
         new_genotype.fingerprint = None
@@ -725,17 +914,28 @@ class Genome(BaseModel):
         new_genotype = Genotype(genome=self, generation=genotype.generation+1)
         new_genotype.save(check_fingerprint=False)
         priors = {}
-        for gene in genotype.genes.order_by('-gene__dependee_gene__id').iterator():
-            if not self.is_allowable_gene(priors=priors, next=gene.gene):
-                continue
-            new_gene = gene
+        
+        ggenes = genotype.genes.order_by('-gene__dependee_gene__id')
+        ggene_count = ggenes.count()
+        ggene_weights = dict((ggene, ggene.gene.mutation_weight or 0) for ggene in ggenes.iterator())
+        ggene_weights_sum = sum(ggene.gene.mutation_weight or 0 for ggene in ggenes.iterator())
+        
+        # Randomly select K elements and add weight then do weighted selection.
+        k = max(1, int(round(self.mutation_rate * ggene_count, 0)))
+        mutated_genes = set(utils.weighted_samples(choices=ggene_weights, k=k))
+        for ggene in ggenes.iterator():
+#            if not self.is_allowable_gene(priors=priors, next=gene.gene):
+#                continue
+            new_gene = ggene
             new_gene.id = None
             new_gene.genotype = new_genotype
-            if random.random() <= self.mutation_rate:
-                print 'Mutating gene:',gene
-                new_gene._value = gene.get_random_value()
+#            if random.random() <= self.mutation_rate:
+            if ggene in mutated_genes:
+                print 'Mutating gene:',ggene
+                new_gene._value = ggene.get_random_value()
             new_gene.save()
-            priors[new_gene.gene] = new_gene._value
+#            priors[new_gene.gene] = new_gene._value
+            
         self.add_missing_genes(new_genotype)
         new_genotype.fingerprint = None
         new_genotype.fingerprint_fresh = False
@@ -941,21 +1141,27 @@ class Genome(BaseModel):
         """
         
         # Delete genotypes that are incomplete or duplicates.
+        print 'Deleting corrupt genotypes...'
         self.delete_corrupt()
         
         # Add missing genes to genotypes.
+        print 'Adding missing genes...'
         self.add_missing_genes()
     
         # Creates the initial genotypes.
         if populate:
+            print 'Populating...'
             self.populate()
         
         # Evaluate un-evaluated genotypes.
+        #max_fitness = self.max_fitness
         if evaluate:
             self.evaluate(genotype_id=genotype_id)
             if not genotype_id:
-                self.epoche = self.epoche+1
-                type(self).objects.filter(id=self.id).update(epoche=self.epoche)
+                self.epoche += 1
+                self.epoches_since_improvement += 1
+                #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
+                self.save()
         
     def evaluate(self, genotype_id=None):
         """
@@ -966,6 +1172,7 @@ class Genome(BaseModel):
         if genotype_id:
             q = q.filter(id=genotype_id)
         
+        print 'Searching for pending genotypes...'
         total = q.count()
         print '%i pending genotypes found.' % (total,)
         i = 0
@@ -1059,15 +1266,49 @@ class Gene(BaseModel):
         blank=True, null=True,
         help_text=_('The maximum value this gene will be allowed to store.'))
     
-#    min_value_observed = models.CharField(
-#        max_length=100,
-#        blank=True, null=True,
-#        help_text=_('The minimum value observed for this gene.'))
-#    
-#    max_value_observed = models.CharField(
-#        max_length=100,
-#        blank=True, null=True,
-#        help_text=_('The maximum value observed for this gene.'))
+    min_value_observed = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The minimum value observed for this gene.'))
+    
+    max_value_observed = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The maximum value observed for this gene.'))
+    
+    coverage_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        verbose_name=_(' CR'),
+        help_text=_('Coverage ratio. The ratio of values being used by genotypes.'))
+    
+    exploration_priority = models.PositiveIntegerField(
+        default=1,
+        blank=False,
+        null=False,
+        db_index=True,
+        verbose_name=_(' EP'),
+        help_text=_('''Exploration priority.
+            The importance by which all unique values will be
+            tested. The higher, the more likely all values will be
+            explored.'''))
+    
+    mutation_weight = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        verbose_name=_(' MW'),
+        help_text=_('''Mutation weight.
+            The cached calculation
+            (1-coverage_ratio)*exploration_priority.
+            Designed to explore high-priority genes first.'''))
     
     max_increment = models.CharField(
         help_text='''When mutating an integer or float value, this is the
@@ -1089,12 +1330,31 @@ class Gene(BaseModel):
         )
         
     def __unicode__(self):
-        return '<Gene:%s %s>' % (self.id, self.name)
+        #return '<Gene:%s %s>' % (self.id, self.name)
+        return '%i:%s' % (self.genome.id if self.genome else None, self.name)
+    
+    def update_mutation_weight(self, auto_update=True):
+        cr = self.coverage_ratio
+        ep = self.exploration_priority
+        self.mutation_weight = None
+        if cr is not None and ep is not None:
+            self.mutation_weight = (1 - cr)*ep
+        if auto_update:
+            type(self).objects.filter(id=self.id).update(mutation_weight=self.mutation_weight)
+    
+    def update_coverage(self, auto_update=True):
+        possible_value_count = self.get_max_value_count()
+        actual_values = set(self.gene_values.all().values_list('_value', flat=True).distinct())
+        ratio = len(actual_values)/float(possible_value_count)
+        self.coverage_ratio = ratio
+        if auto_update:
+            type(self).objects.filter(id=self.id).update(coverage_ratio=ratio)
+        self.update_mutation_weight(auto_update=auto_update)
     
     def save(self, *args, **kwargs):
+        if self.id:
+            self.update_coverage(auto_update=False)
         super(Gene, self).save(*args, **kwargs)
-        
-        #self.genome.genotypes.filter(genes___value=)
     
     def get_max_value_count(self):
         """
@@ -1183,7 +1443,10 @@ class Gene(BaseModel):
 class GenotypeManager(models.Manager):
     
     def stale(self):
-        return self.filter(valid=True, fitness__isnull=True)
+        return self.filter(
+            valid=True,
+            fitness__isnull=True,
+        )
     
     def valid(self):
         """
@@ -1191,7 +1454,11 @@ class GenotypeManager(models.Manager):
         (e.g. fresh=True) and has received a fitness rating
         (e.g. fitness is not null).
         """
-        return self.filter(valid=True, fresh=True, fitness__isnull=False)
+        return self.filter(
+            valid=True,
+            fresh=True,
+            fitness__isnull=False,
+        )
 
 class Genotype(models.Model):
     """
@@ -1200,7 +1467,17 @@ class Genotype(models.Model):
     
     objects = GenotypeManager()
     
-    genome = models.ForeignKey(Genome, related_name='genotypes')
+    genome = models.ForeignKey(
+        Genome,
+        related_name='genotypes')
+    
+    species = models.ForeignKey(
+        'Species',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name='genotypes')
     
     fingerprint = models.CharField(
         max_length=700,
@@ -1251,6 +1528,13 @@ class Genotype(models.Model):
         blank=True,
         null=True,
         editable=False)
+    
+#    preserve = models.BooleanField(
+#        default=False,
+#        help_text=_('''If checked, this genotype will not be deleted
+#            even if it becomes unfit.'''))
+    
+    #evaluation_epoche = 
     
     fresh = models.BooleanField(
         default=False,
@@ -1316,6 +1600,13 @@ class Genotype(models.Model):
         ordering = (
             '-fitness',
         )
+        index_together = (
+            (
+                'valid',
+                'fresh',
+                'fitness',
+            ),
+        )
         pass
     
     def __unicode__(self):
@@ -1333,10 +1624,13 @@ class Genotype(models.Model):
         """
         Deletes genes that aren't allowed to exist according to genome rules.
         """
-        for gene in list(self.genes.all()):
-            if not gene.is_legal():
-                print 'Deleting illegal genotype gene %s...' % (gene,)
-                gene.delete()
+        q = self.illegal_gene_values.all()
+        for illegal in q.iterator():
+            illegal.gene_value.delete()
+#        for gene in list(self.genes.all()):
+#            if not gene.is_legal():
+#                print 'Deleting illegal genotype gene %s...' % (gene,)
+#                gene.delete()
         self.fingerprint_fresh = False
         self.save(check_fingerprint=False)
     
@@ -1403,9 +1697,8 @@ class Genotype(models.Model):
     def getattr(self, name):
         return self.genes.filter(gene__name=name)[0].value
         
-    @property
     def as_dict(self):
-        return dict((gene.name, gene.value) for gene in self.genes.all())
+        return dict((gene.gene.name, gene.value) for gene in self.genes.all())
     
     def refresh_fitness(self):
         """
@@ -1436,6 +1729,49 @@ class Genotype(models.Model):
             mean_absolute_error=None,
         )
 
+class GenotypeGeneIllegal(BaseModel):
+    """
+    Wraps the efficient SQL view that detects all invalid gene values.
+    """
+    
+    gene_value = models.ForeignKey(
+        'GenotypeGene',
+        db_column='illegal_genotypegene_id',
+        primary_key=True,
+        blank=False,
+        null=False,
+        on_delete=models.DO_NOTHING,
+        editable=False)
+    
+    illegal_gene_name = models.CharField(
+        max_length=1000,
+        editable=False)
+        
+    genotype = models.ForeignKey(
+        'Genotype',
+        db_column='illegal_genotype_id',
+        related_name='illegal_gene_values',
+        blank=False,
+        null=False,
+        editable=False,
+        on_delete=models.DO_NOTHING)
+        
+    dependee_name = models.CharField(
+        max_length=1000,
+        editable=False)
+    
+    dependee_value = models.CharField(
+        max_length=1000,
+        editable=False)
+    
+    illegal_value = models.CharField(
+        editable=False,
+        max_length=1000)
+    
+    class Meta:
+        managed = False
+        db_table = 'django_analyze_genotypegeneillegal'
+    
 class GenotypeGene(BaseModel):
     
     genotype = models.ForeignKey(
@@ -1444,7 +1780,7 @@ class GenotypeGene(BaseModel):
     
     gene = models.ForeignKey(
         Gene,
-        related_name='genes')
+        related_name='gene_values')
 
     _value = models.CharField(
         max_length=1000,
@@ -1555,7 +1891,7 @@ class GenotypeGene(BaseModel):
         """
         
         try:
-            print 'self._value:',self._value
+            #print 'self._value:',self._value
             value = str_to_type[self.gene.type](self._value)
             if self.gene.values:
                 values = self.gene.get_values_list()
@@ -1572,6 +1908,7 @@ class GenotypeGene(BaseModel):
     def save(self, using=None, *args, **kwargs):
         self.full_clean()
         super(GenotypeGene, self).save(using=using, *args, **kwargs)
+        self.gene.update_coverage(auto_update=True)
 #        self.genotype.fingerprint_fresh = False
 #        self.genotype.fresh = False
 #        self.genotype.save(check_fingerprint=False)

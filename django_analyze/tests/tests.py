@@ -106,3 +106,52 @@ class Tests(TestCase):
         self.assertAlmostEqual(b_count, b_ratio, places=1)
         self.assertAlmostEqual(c_count, c_ratio, places=1)
         
+        # Test corner case where all values have zero-weight.
+        counts = defaultdict(int)
+        weights = dict(a=0, b=0, c=0)
+        for _ in xrange(10000):
+            counts[utils.weighted_choice(weights)] += 1
+        total = float(sum(counts.values()))
+#        for k,v in counts.iteritems():
+#            print v/total, k
+        a_count = counts['a']/total
+        b_count = counts['b']/total
+        c_count = counts['c']/total
+        
+        a_ratio = 1.0/3
+        b_ratio = 1.0/3
+        c_ratio = 1.0/3
+        self.assertAlmostEqual(a_count, a_ratio, places=1)
+        self.assertAlmostEqual(b_count, b_ratio, places=1)
+        self.assertAlmostEqual(c_count, c_ratio, places=1)
+    
+    def test_weighted_samples(self):
+        from collections import defaultdict
+        counts = defaultdict(int)
+        a_ratio = 1.0/10
+        b_ratio = 2.0/10
+        c_ratio = 3.0/10
+        d_ratio = 4.0/10
+        weights = dict(a=a_ratio, b=b_ratio, c=c_ratio, d=d_ratio)
+        
+        counts = defaultdict(int)
+        for _ in xrange(100000):
+            samples = list(utils.weighted_samples(choices=weights, k=2))
+#            print samples
+            self.assertEqual(len(samples), 2)
+            for sample in samples:
+                counts[sample] += 1
+                
+        total = float(sum(counts.values()))
+#        for k in sorted(counts.iterkeys()):
+#            print counts[k]/total, k
+        a_count = counts['a']/total
+        b_count = counts['b']/total
+        c_count = counts['c']/total
+        d_count = counts['d']/total
+        
+        self.assertAlmostEqual(a_count, a_ratio, places=1)
+        self.assertAlmostEqual(b_count, b_ratio, places=1)
+        self.assertAlmostEqual(c_count, c_ratio, places=1)
+        self.assertAlmostEqual(d_count, d_ratio, places=1)
+        

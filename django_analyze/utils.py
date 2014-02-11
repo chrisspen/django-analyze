@@ -6,7 +6,36 @@ from collections import defaultdict
 import random
 
 import psutil
-        
+
+def ilog(n, base):
+    """
+    Find the integer log of n with respect to the base.
+
+    >>> import math
+    >>> for base in range(2, 16 + 1):
+    ...     for n in range(1, 1000):
+    ...         assert ilog(n, base) == int(math.log(n, base) + 1e-10), '%s %s' % (n, base)
+    """
+    count = 0
+    while n >= base:
+        count += 1
+        n //= base
+    return count
+
+def sci_notation(n, prec=3):
+    """
+    Represent n in scientific notation, with the specified precision.
+
+    >>> sci_notation(1234 * 10**1000)
+    '1.234e+1003'
+    >>> sci_notation(10**1000 // 2, prec=1)
+    '5.0e+999'
+    """
+    base = 10
+    exponent = ilog(n, base)
+    mantissa = n / base**exponent
+    return '{0:.{1}f}e{2:+d}'.format(mantissa, prec, exponent)
+
 #TODO:extend the use of Process to distributed architextures?
 #http://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing/
 class TimedProcess(Process):
@@ -178,6 +207,11 @@ def weighted_choice(choices, get_total=None, get_weight=None):
 #        print 'total:',total
     else:
         total = sum(w for c, w in get_iter())
+    
+    # If no non-zero weights given, then just use a uniform distribution.
+    if not total:
+        return random.choice(list(get_iter()))[0]
+        
     r = random.uniform(0, total)
     upto = 0.
     for c in get_iter():
@@ -189,3 +223,23 @@ def weighted_choice(choices, get_total=None, get_weight=None):
             return c
         upto += w
     raise Exception
+
+def weighted_samples(choices, k=1):
+    """
+    Randomly selects from weighted choices without replacement.
+    
+    Choices must be a dictionary of the form {item:weight}.
+    """
+    if isinstance(choices, list):
+        choices = dict(choices)
+    assert isinstance(choices, dict)
+    choices = choices.copy()
+    assert k >= 1, 'K must be greater or equal to 1.'
+    #assert k <= len(choices)
+    for _ in xrange(k):
+        if not choices:
+            return
+        item = weighted_choice(choices)
+        del choices[item]
+        yield item
+        
