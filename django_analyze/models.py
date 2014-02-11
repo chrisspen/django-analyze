@@ -555,8 +555,16 @@ class Genome(BaseModel):
 #        null=True)
     
     maximum_population = models.PositiveIntegerField(
+        default=10,
+        verbose_name=_('maximum unevaluated population'),
+        help_text=_('''The maximum number of new genotype records to create
+            each epoche. If set to zero, no limit will be enforced.''')
+    )
+    
+    maximum_evaluated_population = models.PositiveIntegerField(
         default=1000,
-        help_text=_('''The maximum number of genotype records to create.
+        help_text=_('''The maximum number of evaluted genotype records
+            to store indefinitely.
             If set to zero, no limit will be enforced.
             If delete_inferiors is checked, all after this top amount, ordered
             by fitness, will be deleted.''')
@@ -1085,7 +1093,11 @@ class Genome(BaseModel):
         total = q.count()
         if total:
             print 'Adding %i missing gene values.' % (total,)
+            i = 0
             for missing in q.iterator():
+                i += 1
+                print '\rAdding gene value %i of %i...' % (i, total),
+                sys.stdout.flush()
                 genotype_ids.add(missing.genotype_id)
                 missing.create()
             # Check a second time in case we added a dependee gene
@@ -1206,6 +1218,7 @@ class Genome(BaseModel):
         i = 0
         for gt in q.iterator():
             i += 1
+            gt.reset()
             if not genotype_id:
                 type(self).objects.filter(id=self.id).update(
                     evaluating_part=i-1,
@@ -1236,7 +1249,7 @@ class Genome(BaseModel):
                     error=error,
                 )
                 
-        if not genotype_id:
+        if not genotype_id and total:
             type(self).objects.filter(id=self.id).update(
                 evaluating_part=total,
                 ratio_evaluated=0/float(total),
@@ -1684,15 +1697,18 @@ class Genotype(models.Model):
         Deletes genes that aren't allowed to exist according to genome rules.
         """
         q = self.illegal_gene_values.all()
-        for illegal in q.iterator():
-            illegal.gene_value.delete()
-#        for gene in list(self.genes.all()):
-#            if not gene.is_legal():
-#                print 'Deleting illegal genotype gene %s...' % (gene,)
-#                gene.delete()
-        self.fingerprint_fresh = False
-        if save:
-            self.save(check_fingerprint=False)
+        total = q.count()
+        if total:
+            print 'Deleting %i illegal gene values.' % (total,)
+            for illegal in q.iterator():
+                illegal.gene_value.delete()
+    #        for gene in list(self.genes.all()):
+    #            if not gene.is_legal():
+    #                print 'Deleting illegal genotype gene %s...' % (gene,)
+    #                gene.delete()
+            self.fingerprint_fresh = False
+            if save:
+                self.save(check_fingerprint=False)
     
     def clean(self, check_fingerprint=True, *args, **kwargs):
         """

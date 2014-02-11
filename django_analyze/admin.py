@@ -316,6 +316,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'refresh',
         'check_fingerprint',
         'reset',
+        'mark_stale',
         'refresh_fitness',
     )
     
@@ -337,6 +338,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         messages.success(request, '%i genotypes were reset.' % i)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     reset.short_description = 'Reset selected %(verbose_name_plural)s'
+    
+    def mark_stale(self, request, queryset):
+        queryset.update(fresh=False)
+        i = queryset.count()
+        messages.success(request, '%i genotypes were marked as stale.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    mark_stale.short_description = 'Mark selected %(verbose_name_plural)s as stale'
     
     def refresh_fitness(self, request, queryset):
         i = 0
