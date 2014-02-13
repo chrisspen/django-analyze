@@ -7,6 +7,9 @@ import random
 
 import psutil
 
+def is_power_of_two(x):
+    return (x & (x - 1)) == 0
+
 def ilog(n, base):
     """
     Find the integer log of n with respect to the base.
@@ -172,6 +175,7 @@ class TimedProcess(Process):
                     print>>self.fout, 'Attempting to terminate expired process %s...' % (self.pid,)
                 timeout = True
                 self.terminate()
+                break
         self.t1 = time.clock()
         self.t1_objective = time.time()
         return timeout
@@ -222,7 +226,7 @@ def weighted_choice(choices, get_total=None, get_weight=None):
         if upto + w >= r:
             return c
         upto += w
-    raise Exception
+    raise Exception, 'Unable to make weighted choice: total=%s, choices=%s' % (total, choices,)
 
 def weighted_samples(choices, k=1):
     """

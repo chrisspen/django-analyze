@@ -1,5 +1,7 @@
 import sys
 
+from multiprocessing import Process
+
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
@@ -14,12 +16,16 @@ class Command(BaseCommand):
         make_option('--genotype-id', default=0),
         make_option('--no-populate', action='store_true', default=False),
         make_option('--no-evaluate', action='store_true', default=False),
-        #make_option('--production', action='store_true', default=False),
+        make_option('--force-reset', action='store_true', default=False),
+        make_option('--continuous', action='store_true', default=False),
+        make_option('--processes', default=0, help='The number of processes to use for evaluating.'),
     )
 
     def handle(self, *args, **options):
         ids = [int(_) for _ in args]
-        q = models.Genome.objects.filter(id__in=ids)
+        q = models.Genome.objects.all()
+        if ids:
+            q = q.filter(id__in=ids)
         genotype_id = int(options.get('genotype_id', 0))
         del options['genotype_id']
         if genotype_id:
@@ -34,20 +40,15 @@ class Command(BaseCommand):
     def evolve(self, genome_id, genotype_id=None, **kwargs):
         no_populate = kwargs['no_populate']
         no_evaluate = kwargs['no_evaluate']
-        
+        force_reset = kwargs['force_reset']
         genome = models.Genome.objects.get(id=genome_id)
         print 'Evolving genome %s.' % (genome.name,)
-#            genes = genome.genes.all()
-#            genes_total = genes.count()
-#            genes_i = 0
-#            for gene in genes.iterator():
-#                genes_i += 1
-#                print '\rgenes %i of %i' % (genes_i, genes_total),
-#                sys.stdout.flush()
-#                gene.update_coverage()
-#            return
         genome.evolve(
             genotype_id=genotype_id,
             populate=not no_populate,
             evaluate=not no_evaluate,
+            force_reset=force_reset,
+            continuous=kwargs['continuous'],
+            processes=int(kwargs['processes']),
         )
+        

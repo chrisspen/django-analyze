@@ -31,5 +31,6 @@ class Command(BaseCommand):
             genome.delete_corrupt(save=False)
             genome.add_missing_genes(save=False)
         
+        print
         models.Genotype.freshen_fingerprints()
         

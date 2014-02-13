@@ -100,6 +100,7 @@ class GeneAdmin(BaseModelAdmin):
     
     search_fields = (
         'name',
+        'values',
     )
     
     list_filter = (
@@ -119,7 +120,7 @@ class GeneAdmin(BaseModelAdmin):
     
 admin.site.register(models.Gene, GeneAdmin)
 
-class SpeciesAdmin(admin.ModelAdmin):
+class SpeciesAdmin(BaseModelAdmin):
     list_display = (
         'letter',
         'genome',
@@ -133,7 +134,7 @@ class SpeciesAdmin(admin.ModelAdmin):
     
 admin.site.register(models.Species, SpeciesAdmin)
 
-class GenomeAdmin(admin.ModelAdmin):
+class GenomeAdmin(BaseModelAdmin):
     inlines = (
         #GeneInline,
     )
@@ -141,8 +142,15 @@ class GenomeAdmin(admin.ModelAdmin):
     list_display = (
         'id',
         'name',
+        'epoche',
+        'epoches_since_improvement',
         'min_fitness',
         'max_fitness',
+        'improving',
+    )
+    
+    search_fields = (
+        'name',
     )
     
     readonly_fields = (
@@ -152,6 +160,8 @@ class GenomeAdmin(admin.ModelAdmin):
         'species_link',
         'max_fitness',
         'min_fitness',
+        #'epoches_since_improvement',
+        'improving',
     )
     
     actions = (
@@ -199,6 +209,11 @@ class GenotypeGeneAdmin(BaseModelAdmin):
         'gene',
         'genotype',
         '_value',
+    )
+    
+    raw_id_fields = (
+        'gene',
+        'genotype',
     )
     
     list_editable = (
@@ -255,6 +270,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     list_display = (
         'id',
         'genome',
+        'status',
         'species',
         'fitness',
         'mean_absolute_error',
@@ -271,6 +287,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     list_filter = (
         'fresh',
         'valid',
+        'evaluating',
         ('fitness', NullListFilter),
         ('fingerprint', NullListFilter),
     )
@@ -286,11 +303,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     readonly_fields = [
         'id',
+        'status',
         'fitness',
         'species',
-        'fitness_evaluation_datetime',
         'mean_evaluation_seconds',
         'mean_absolute_error',
+        'fitness_evaluation_datetime_start',
+        'fitness_evaluation_datetime',
         'total_evaluation_seconds',
         'gene_count',
         'fingerprint_bool',
@@ -317,6 +336,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'check_fingerprint',
         'reset',
         'mark_stale',
+        'mark_fresh',
         'refresh_fitness',
     )
     
@@ -345,6 +365,13 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         messages.success(request, '%i genotypes were marked as stale.' % i)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     mark_stale.short_description = 'Mark selected %(verbose_name_plural)s as stale'
+    
+    def mark_fresh(self, request, queryset):
+        queryset.update(fresh=True)
+        i = queryset.count()
+        messages.success(request, '%i genotypes were marked as fresh.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    mark_fresh.short_description = 'Mark selected %(verbose_name_plural)s as fresh'
     
     def refresh_fitness(self, request, queryset):
         i = 0
@@ -398,7 +425,10 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 #                    'fresh_str',
                     'fingerprint_fresh',
                     'fitness',
+                    
+                    'fitness_evaluation_datetime_start',
                     'fitness_evaluation_datetime',
+                    
                     'mean_evaluation_seconds',
                     'total_evaluation_seconds',
                     'mean_absolute_error',

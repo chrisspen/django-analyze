@@ -20,7 +20,7 @@ import django
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models, DatabaseError, connection
+from django.db import models, DatabaseError, connection, reset_queries
 from django.db.models import Sum, Count, Max, Min, Q, F
 from django.db.utils import IntegrityError
 from django.utils import timezone
@@ -486,7 +486,15 @@ def get_extenders():
     for name in sorted(_modeladmin_extenders.iterkeys()):
         yield (name, name)
 
+class SpeciesManager(models.Manager):
+
+    def get_by_natural_key(self, index, *args, **kwargs):
+        genome = Genome.objects.get_by_natural_key(*args, **kwargs)
+        return self.get(index=index, genome=genome)
+    
 class Species(BaseModel):
+    
+    objects = SpeciesManager()
     
     genome = models.ForeignKey(
         'Genome',
@@ -515,6 +523,10 @@ class Species(BaseModel):
     def __unicode__(self):
         return self.letter()
     
+    def natural_key(self):
+        return (self.index,) + self.genome.natural_key()
+    natural_key.dependencies = ['genome']
+    
     def letter(self):
         if self.index <= 0 or self.index >= 27:
             return
@@ -527,11 +539,18 @@ class Species(BaseModel):
         if not self.index:
             self.index = self.genome.species.all().count() + 1
         super(Species, self).save(*args, **kwargs)
-        
+
+class GenomeManager(models.Manager):
+    
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
 class Genome(BaseModel):
     """
     All possible parameters of a problem domain.
     """
+    
+    objects = GenomeManager()
     
     name = models.CharField(
         max_length=100,
@@ -603,7 +622,7 @@ class Genome(BaseModel):
         default=0,
         blank=False,
         null=False,
-        editable=False,
+        editable=True,
         help_text=_('''The number of epoches since an increase in the maximum
             fitness was observed.'''))
     
@@ -611,13 +630,17 @@ class Genome(BaseModel):
         default=10,
         blank=False,
         null=False,
-        editable=False,
+        editable=True,
         help_text=_('''The number of epoches to process without seeing
             a maximum fitness increase before stopping.'''))
     
     def stalled(self):
         return self.epoches_since_improvement >= self.epoche_stall
     stalled.boolean = True
+    
+    def improving(self):
+        return not self.stalled()
+    improving.boolean = True
     
     max_species = models.PositiveIntegerField(
         default=10,
@@ -677,13 +700,17 @@ class Genome(BaseModel):
     def __unicode__(self):
         return self.name
     
+    def natural_key(self):
+        return (self.name,)
+    natural_key.dependencies = []
+    
     def save(self, *args, **kwargs):
         
         if self.id:
             
             old = type(self).objects.get(id=self.id)
             
-            q = self.genotypes.filter(fitness__isnull=False)\
+            q = self.genotypes.filter(fitness__isnull=False).exclude(fitness=float('nan'))\
                 .aggregate(Max('fitness'), Min('fitness'))
             self.max_fitness = q['fitness__max']
             self.min_fitness = q['fitness__min']
@@ -967,7 +994,7 @@ class Genome(BaseModel):
         """
         Returns genotypes that have not yet had their fitness evaluated.
         """
-        return self.genotypes.filter(fresh=False)
+        return self.genotypes.filter(fresh=False, evaluating=False)
     
     @property
     def valid_genotypes(self):
@@ -1044,13 +1071,13 @@ class Genome(BaseModel):
             valid_genotypes = self.valid_genotypes
             random_valid_genotypes = valid_genotypes.order_by('?')
             last_pending = pending
-            creation_type = random.randint(1,3)
+            creation_type = random.randint(1,10)
             for retry in xrange(max_retries):
                 genotype = None
 #                try:
                 if valid_genotypes.count() <= 1 or creation_type == 1:
                     genotype = self.create_random_genotype()
-                elif valid_genotypes.count() >= 2 and creation_type == 2:
+                elif valid_genotypes.count() >= 2 and creation_type < 5:
                     a = utils.weighted_choice(
                         random_valid_genotypes,
                         get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
@@ -1060,7 +1087,7 @@ class Genome(BaseModel):
                         get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
                         get_weight=lambda o:o.fitness)
                     #genotype = self.create_hybrid_genotype(random_valid_genotypes[0], random_valid_genotypes[1])
-                    genotype = self.create_hybrid_genotype(random_valid_genotypes[0], random_valid_genotypes[1])
+                    genotype = self.create_hybrid_genotype(a, b)
                 else:
                     genotype = self.create_mutant_genotype(random_valid_genotypes[0])
                 break
@@ -1175,66 +1202,140 @@ class Genome(BaseModel):
 #            if not added:
 #                break
                 
-    def evolve(self, genotype_id=None, populate=True, evaluate=True):
+    def evolve(self,
+        genotype_id=None,
+        populate=True,
+        evaluate=True,
+        force_reset=False,
+        continuous=False,
+        processes=0):
         """
-        Runs a single epoch of genotype generation and evaluation.
+        Runs a one or more cycles of genotype deletion, generation and evaluation.
         """
+        from multiprocessing import Process, Queue, Lock
         
-        # Delete genotypes that are incomplete or duplicates.
-        print 'Deleting corrupt genotypes...'
-        self.delete_corrupt()
+        assert processes >= 0
         
-        # Add missing genes to genotypes.
-        print 'Adding missing genes...'
-        self.add_missing_genes()
-    
-        # Creates the initial genotypes.
-        if populate:
-            print 'Populating...'
-            self.populate()
+#        assert not processes or utils.is_power_of_two(processes), \
+#            'Processes must be a power of 2.'
         
-        # Evaluate un-evaluated genotypes.
-        #max_fitness = self.max_fitness
-        if evaluate:
-            self.evaluate(genotype_id=genotype_id)
-            if not genotype_id:
-                self.epoche += 1
-                self.epoches_since_improvement += 1
-                #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
-                self.save()
+        tmp_debug = settings.DEBUG
+        settings.DEBUG = False
+        try:
+            while 1:
+                
+                #TODO:Delete the worst if population at max.
+                
+                #TODO:Mark old evaluated genotypes as stale after N days to force re-evaluation.
+                
+                # Delete genotypes that are incomplete or duplicates.
+                print 'Deleting corrupt genotypes...'
+                self.delete_corrupt()
+                
+                # Add missing genes to genotypes.
+                print 'Adding missing genes...'
+                self.add_missing_genes()
+            
+                # Creates the initial genotypes.
+                if populate:
+                    print 'Populating...'
+                    self.populate()
+                
+                # Evaluate un-evaluated genotypes.
+                #max_fitness = self.max_fitness
+                if evaluate:
+                    if genotype_id:
+                        self.evaluate(genotype_id=genotype_id, force_reset=force_reset)
+                        return
+                    else:
+                        
+                        process_stack = []
+                        lock = Lock()
+                        if processes:
+                            # Start processes.
+                            for _ in xrange(processes):
+                                django.db.connection.close()
+                                p = Process(target=self.evaluate, kwargs=dict(lock=lock))
+                                #p.daemon = True#breaks evaluate() launching processes of its own
+                                p.start()
+                                process_stack.append(p)
+                            # Wait for processes to end.
+                            while any(p for p in process_stack if p.is_alive()):
+                                time.sleep(0.1)
+                        else:
+                            self.evaluate(genotype_id=genotype_id, force_reset=force_reset)
+                        
+                        Genome.objects.update()
+                        genome = Genome.objects.get(id=self.id)
+                        genome.epoche += 1
+                        genome.epoches_since_improvement += 1
+                        #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
+                        genome.save()
+                else:
+                    return
+                
+                Genome.objects.update()
+                genome = Genome.objects.get(id=self.id)
+                if not continuous or genome.stalled():
+                    break
+                
+                # Clear the query cache to help reduce memory usage.
+                reset_queries()
         
-    def evaluate(self, genotype_id=None):
+        finally:
+            settings.DEBUG = tmp_debug
+            #django.db.transaction.commit()
+            
+    def evaluate(self, genotype_id=None, force_reset=False, lock=None, fout=None):
         """
         Calculates the fitness of all currently unevaluated genotypes
         using the genome's linked fitness metric.
         """
-        q = self.pending_genotypes
-        if genotype_id:
-            q = q.filter(id=genotype_id)
+        fout = fout or sys.stdout
         
-        print 'Searching for pending genotypes...'
-        total = q.count()
-        print '%i pending genotypes found.' % (total,)
-        i = 0
-        for gt in q.iterator():
-            i += 1
-            gt.reset()
-            if not genotype_id:
-                type(self).objects.filter(id=self.id).update(
-                    evaluating_part=i-1,
-                    ratio_evaluated=0/float(total),
-                )
+        while 1:
+            
+            # Build query to retrieve next genotype to evaluate.
+            if force_reset:
+                print>>fout, 'Retrieving all genotypes...'
+                q = self.genotypes.all()
+            else:
+                print>>fout, 'Retrieving pending genotypes...'
+                q = self.pending_genotypes
+            if genotype_id:
+                q = q.filter(id=genotype_id)
+            
+            # Retrieve the next genotype.
             try:
-                t0 = time.time()
+                print 'lock:',lock
+                if lock:
+                    lock.acquire()
+                if q.exists():
+                    Genotype.objects.update()
+                    gt = q[0]
+                    gt.reset()
+                    gt.evaluating = True
+                    gt.evaluating_pid = os.getpid()
+                    gt.fitness_evaluation_datetime_start = timezone.now()
+                    gt.save()
+                else:
+                    # Nothing left to evaluate.
+                    return
+            finally:
+                if lock:
+                    lock.release()
+            
+            # Run the backend evaluator.
+            try:
                 self.evaluator_function(gt)
-#                print '!'*80
-#                print 'ontime_ratio:',gt.ontime_ratio
                 gt.fitness_evaluation_datetime = timezone.now()
+                gt.evaluating = False
+                gt.evaluating_pid = None
                 gt.fresh = True
                 gt.valid = True
                 gt.error = None
-                gt.total_evaluation_seconds = time.time() - t0
                 gt.save()
+                reset_queries()
             except Exception, e:
                 print>>sys.stderr, 'Error evaluating genotype %i.' % (gt.id,)
                 fout = StringIO()
@@ -1248,17 +1349,19 @@ class Genome(BaseModel):
                     valid=False,
                     error=error,
                 )
-                
-        if not genotype_id and total:
-            type(self).objects.filter(id=self.id).update(
-                evaluating_part=total,
-                ratio_evaluated=0/float(total),
-            )
+
+class GeneManager(models.Manager):
+    
+    def get_by_natural_key(self, name, *args, **kwargs):
+        genome = Genome.objects.get_by_natural_key(*args, **kwargs)
+        return self.get(name=name, genome=genome)
 
 class Gene(BaseModel):
     """
     Describes a specific configurable settings in a problem domain.
     """
+    
+    objects = GeneManager()
     
     genome = models.ForeignKey(Genome, related_name='genes')
     
@@ -1266,6 +1369,10 @@ class Gene(BaseModel):
         max_length=1000,
         blank=False,
         null=False)
+    
+    description = models.TextField(
+        default='',
+        blank=True)
     
     dependee_gene = models.ForeignKey(
         'self',
@@ -1373,6 +1480,10 @@ class Gene(BaseModel):
     def __unicode__(self):
         #return '<Gene:%s %s>' % (self.id, self.name)
         return '%i:%s' % (self.genome.id if self.genome else None, self.name)
+    
+    def natural_key(self):
+        return (self.name,) + self.genome.natural_key()
+    natural_key.dependencies = ['genome']
     
     def update_mutation_weight(self, auto_update=True):
         cr = self.coverage_ratio
@@ -1482,7 +1593,11 @@ class Gene(BaseModel):
         return [str_to_type[self.type](_) for _ in lst]
 
 class GenotypeManager(models.Manager):
-    
+
+    def get_by_natural_key(self, fingerprint, *args, **kwargs):
+        genome = Genome.objects.get_by_natural_key(*args, **kwargs)
+        return self.get(fingerprint=fingerprint, genome=genome)
+
     def stale(self):
         return self.filter(
             valid=True,
@@ -1499,7 +1614,7 @@ class GenotypeManager(models.Manager):
             valid=True,
             fresh=True,
             fitness__isnull=False,
-        )
+        ).exclude(fitness=float('nan'))
 
 class Genotype(models.Model):
     """
@@ -1550,7 +1665,17 @@ class Genotype(models.Model):
     
     fitness = models.FloatField(blank=True, null=True, editable=False)
     
-    fitness_evaluation_datetime = models.DateTimeField(blank=True, null=True, editable=False)
+    fitness_evaluation_datetime_start = models.DateTimeField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name=_('evaluation start time'))
+    
+    fitness_evaluation_datetime = models.DateTimeField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name=_('evaluation stop time'))
     
     mean_evaluation_seconds = models.PositiveIntegerField(blank=True, null=True, editable=False)
     
@@ -1576,6 +1701,18 @@ class Genotype(models.Model):
 #            even if it becomes unfit.'''))
     
     #evaluation_epoche = 
+    
+    evaluating = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=_('''If checked, indicates this genotype is currently having
+            its fitness evaluated.'''))
+    
+    evaluating_pid = models.IntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The PID of the process evaluating this genotype.'))
     
     fresh = models.BooleanField(
         default=False,
@@ -1655,12 +1792,28 @@ class Genotype(models.Model):
         #return '<%s:%i>' % (type(self).__name__, self.id)#(self.fingerprint or u'') or unicode(self.id)
         return unicode(self.id)
     
+    def natural_key(self):
+        return (self.fingerprint,) + self.genome.natural_key()
+    natural_key.dependencies = ['genome']
+
     def get_fingerprint(self):
         return obj_to_hash(tuple(sorted(
             (gene.gene.name, gene.value)
             for gene in self.genes.all())
-            #for gene in GenotypeGene.objects.filter(genotype__id=self.id)
         ))
+    
+    @property
+    def status(self):
+        if self.evaluating:
+            if self.evaluating_pid:
+                return 'evaluating by %s' % (self.evaluating_pid,)
+            else:
+                return 'evaluating'
+#        elif self.fitness_evaluation_datetime_start and not self.fitness_evaluation_datetime:
+#            return 'evaluating'
+#        elif not self.fresh and self.success_ratio is not None:
+#            return 'evaluating'
+        return ''
     
     @classmethod
     def freshen_fingerprints(cls):
@@ -1672,8 +1825,12 @@ class Genotype(models.Model):
         total = q.count()
         if total:
             print 'Freshening %i fingerprints.' % (total,)
+            i = 0
             for gt in q.iterator():
+                i += 1
                 #TODO:handle fingerprint conflicts?
+                print '\rFreshening fingerprint %i of %i...' % (i, total),
+                sys.stdout.flush()
                 gt.save(check_fingerprint=True)
     
     @classmethod
@@ -1766,6 +1923,10 @@ class Genotype(models.Model):
                 
         self.full_clean(check_fingerprint=check_fingerprint)
         
+        self.total_evaluation_seconds = 0
+        if self.fitness_evaluation_datetime and self.fitness_evaluation_datetime_start:
+            self.total_evaluation_seconds = (self.fitness_evaluation_datetime - self.fitness_evaluation_datetime_start).seconds
+        
         super(Genotype, self).save(using=using, *args, **kwargs)
         #print 'genotype.save().fresh:',self.fresh
         self.genome.save()
@@ -1803,6 +1964,10 @@ class Genotype(models.Model):
             total_evaluation_seconds=None,
             mean_evaluation_seconds=None,
             mean_absolute_error=None,
+            fitness_evaluation_datetime_start=None,
+            fitness_evaluation_datetime=None,
+            evaluating=False,
+            evaluating_pid=None,
         )
 
 class GenotypeGeneIllegal(BaseModel):
@@ -1903,6 +2068,13 @@ class GenotypeGeneMissing(BaseModel):
 #            .filter(id=self.genotype_id)\
 #            .update(fingerprint_fresh=False)
 
+class GenotypeGeneManager(models.Manager):
+    
+    def get_by_natural_key(self, fingerprint, genome_name, gene_name, genome_name2):
+        genotype = Genotype.objects.get_by_natural_key(fingerprint, genome_name)
+        gene = Gene.objects.get_by_natural_key(gene_name, genome_name2)
+        return self.get(genotype=genotype, gene=gene)
+    
 class GenotypeGene(BaseModel):
     
     genotype = models.ForeignKey(
@@ -1930,6 +2102,10 @@ class GenotypeGene(BaseModel):
         )
         verbose_name = _('genotype gene')
         verbose_name_plural = _('genotype genes')
+    
+    def natural_key(self):
+        return self.genotype.natural_key() + self.gene.natural_key()
+    natural_key.dependencies = ['genotype', 'gene']
     
     def __unicode__(self):
         return '<GenotypeGene:%s %s=%s>' % (self.id, self.gene.name, self._value)
