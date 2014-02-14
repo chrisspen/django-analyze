@@ -106,7 +106,7 @@ class BaseModel(models.Model):
 class LabelManager(models.Manager):
     
     def get_by_natural_key(self, name):
-        return self.get(name=name)
+        return self.get_or_create(name=name)
 
 class Label(BaseModel):
     """
@@ -490,7 +490,7 @@ class SpeciesManager(models.Manager):
 
     def get_by_natural_key(self, index, *args, **kwargs):
         genome = Genome.objects.get_by_natural_key(*args, **kwargs)
-        return self.get(index=index, genome=genome)
+        return self.get_or_create(index=index, genome=genome)
     
 class Species(BaseModel):
     
@@ -545,7 +545,7 @@ class Species(BaseModel):
 class GenomeManager(models.Manager):
     
     def get_by_natural_key(self, name):
-        return self.get(name=name)
+        return self.get_or_create(name=name)
 
 class Genome(BaseModel):
     """
@@ -1358,7 +1358,7 @@ class GeneManager(models.Manager):
     
     def get_by_natural_key(self, name, *args, **kwargs):
         genome = Genome.objects.get_by_natural_key(*args, **kwargs)
-        return self.get(name=name, genome=genome)
+        return self.get_or_create(name=name, genome=genome)
 
 class Gene(BaseModel):
     """
@@ -1602,7 +1602,7 @@ class GenotypeManager(models.Manager):
 
     def get_by_natural_key(self, fingerprint, *args, **kwargs):
         genome = Genome.objects.get_by_natural_key(*args, **kwargs)
-        return self.get(fingerprint=fingerprint, genome=genome)
+        return self.get_or_create(fingerprint=fingerprint, genome=genome)
 
     def stale(self):
         return self.filter(
@@ -2081,7 +2081,7 @@ class GenotypeGeneManager(models.Manager):
     def get_by_natural_key(self, fingerprint, genome_name, gene_name, genome_name2):
         genotype = Genotype.objects.get_by_natural_key(fingerprint, genome_name)
         gene = Gene.objects.get_by_natural_key(gene_name, genome_name2)
-        return self.get(genotype=genotype, gene=gene)
+        return self.get_or_create(genotype=genotype, gene=gene)
     
 class GenotypeGene(BaseModel):
     
