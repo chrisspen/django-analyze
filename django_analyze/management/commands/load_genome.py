@@ -38,7 +38,9 @@ def find_object_pk(model, obj, data):
     obj = model.objects.get_by_natural_key(*keys)
     #print 'obj:',obj
     #print 'obj.pk:',obj.pk, obj.id
-    return obj.pk
+    if hasattr(obj, 'pk'):
+        return obj.pk
+    return obj.id
 
 class ContentBuilderOnMap(YajlContentBuilder):
     
