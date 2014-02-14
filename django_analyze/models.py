@@ -523,6 +523,8 @@ class Species(BaseModel):
     def __unicode__(self):
         return self.letter()
     
+    natural_key_fields = ('index', 'genome')
+    
     def natural_key(self):
         return (self.index,) + self.genome.natural_key()
     natural_key.dependencies = ['genome']
@@ -551,6 +553,8 @@ class Genome(BaseModel):
     """
     
     objects = GenomeManager()
+    
+    natural_key_fields = ('name',)
     
     name = models.CharField(
         max_length=100,
@@ -1481,6 +1485,8 @@ class Gene(BaseModel):
         #return '<Gene:%s %s>' % (self.id, self.name)
         return '%i:%s' % (self.genome.id if self.genome else None, self.name)
     
+    natural_key_fields = ('name', 'genome')
+    
     def natural_key(self):
         return (self.name,) + self.genome.natural_key()
     natural_key.dependencies = ['genome']
@@ -1792,6 +1798,8 @@ class Genotype(models.Model):
         #return '<%s:%i>' % (type(self).__name__, self.id)#(self.fingerprint or u'') or unicode(self.id)
         return unicode(self.id)
     
+    natural_key_fields = ('fingerprint', 'genome')
+    
     def natural_key(self):
         return (self.fingerprint,) + self.genome.natural_key()
     natural_key.dependencies = ['genome']
@@ -2102,7 +2110,9 @@ class GenotypeGene(BaseModel):
         )
         verbose_name = _('genotype gene')
         verbose_name_plural = _('genotype genes')
-    
+
+    natural_key_fields = ('genotype', 'gene')
+
     def natural_key(self):
         return self.genotype.natural_key() + self.gene.natural_key()
     natural_key.dependencies = ['genotype', 'gene']
