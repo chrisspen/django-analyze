@@ -26,6 +26,7 @@ from django.db.utils import IntegrityError
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext, ugettext_lazy as _
+from django.db.models import signals
 
 from django_materialized_views.models import MaterializedView
 
@@ -48,6 +49,28 @@ str_to_type = {
     c.GENE_TYPE_BOOL:(lambda v: True if v in (True, 'True', 1, '1') else False),
     c.GENE_TYPE_STR:(lambda v: str(v)),
 }
+
+_global_fingerprint_check = [True]
+
+def enable_fingerprint_check():
+    _global_fingerprint_check[0] = True
+
+def disable_fingerprint_check():
+    _global_fingerprint_check[0] = False
+
+def do_fingerprint_check():
+    return _global_fingerprint_check[0]
+
+_global_validation_check = [True]
+
+def enable_validation_check():
+    _global_validation_check[0] = True
+
+def disable_validation_check():
+    _global_validation_check[0] = False
+
+def do_validation_check():
+    return _global_validation_check[0]
 
 def obj_to_hash(o):
     """
@@ -1882,7 +1905,7 @@ class Genotype(models.Model):
         for both inside and outside of admin. 
         """
         try:
-            if self.id and check_fingerprint:
+            if do_validation_check() and self.id and check_fingerprint:
                 fingerprint = self.get_fingerprint()
                 q = self.genome.genotypes.filter(fingerprint=fingerprint).exclude(id=self.id)
                 if q.count():
@@ -1925,7 +1948,7 @@ class Genotype(models.Model):
             
             self.gene_count = self.genes.all().count()
             
-            if check_fingerprint and not self.fingerprint_fresh:
+            if do_fingerprint_check() and check_fingerprint and not self.fingerprint_fresh:
                 self.fingerprint = self.get_fingerprint()
                 self.fingerprint_fresh = True
                 
@@ -1936,9 +1959,12 @@ class Genotype(models.Model):
             self.total_evaluation_seconds = (self.fitness_evaluation_datetime - self.fitness_evaluation_datetime_start).seconds
         
         super(Genotype, self).save(using=using, *args, **kwargs)
-        #print 'genotype.save().fresh:',self.fresh
+    
+    @staticmethod
+    def post_save(sender, instance, *args, **kwargs):
+        self = instance
         self.genome.save()
-        
+    
     def getattr(self, name):
         return self.genes.filter(gene__name=name)[0].value
         
@@ -2085,6 +2111,8 @@ class GenotypeGeneManager(models.Manager):
     
 class GenotypeGene(BaseModel):
     
+    objects = GenotypeGeneManager()
+    
     genotype = models.ForeignKey(
         Genotype,
         related_name='genes')
@@ -2206,16 +2234,16 @@ class GenotypeGene(BaseModel):
         Override this to implement your own model validation
         for both inside and outside of admin. 
         """
-        
-        try:
-            #print 'self._value:',self._value
-            value = str_to_type[self.gene.type](self._value)
-            if self.gene.values:
-                values = self.gene.get_values_list()
-                if value not in values:
-                    raise ValidationError({'_value': 'Value must be one of %s, not %s' % (', '.join(map(str, values)), repr(value))})
-        except ValueError:
-            raise ValidationError({'_value': 'Value must be of type %s.' % self.gene.type})
+        if do_validation_check():
+            try:
+                #print 'self._value:',self._value
+                value = str_to_type[self.gene.type](self._value)
+                if self.gene.values:
+                    values = self.gene.get_values_list()
+                    if value not in values:
+                        raise ValidationError({'_value': 'Value must be one of %s, not %s' % (', '.join(map(str, values)), repr(value))})
+            except ValueError:
+                raise ValidationError({'_value': 'Value must be of type %s.' % self.gene.type})
         
         super(GenotypeGene, self).clean(*args, **kwargs)
         
@@ -2225,22 +2253,14 @@ class GenotypeGene(BaseModel):
     def save(self, using=None, *args, **kwargs):
         self.full_clean()
         super(GenotypeGene, self).save(using=using, *args, **kwargs)
-        self.gene.update_coverage(auto_update=True)
-#        self.genotype.fingerprint_fresh = False
-#        self.genotype.fresh = False
-#        self.genotype.save(check_fingerprint=False)
         
     @staticmethod
     def post_save(sender, instance, *args, **kwargs):
         self = instance
+        self.gene.update_coverage(auto_update=True)
         Genotype.objects\
             .filter(id=self.genotype_id)\
             .update(fresh=False, fingerprint_fresh=False)
-#        self.genotype.fresh = False
-#        self.genotype.fingerprint_fresh = False
-#        self.genotype.save(check_fingerprint=False)
-#        print '?'*80
-#        print 'self.genotype.fresh:',self.genotype.fresh
         
     @staticmethod
     def post_delete(sender, instance, *args, **kwargs):
@@ -2261,6 +2281,14 @@ class GenotypeGene(BaseModel):
             pass
 
 #TODO:fix signals not being sent after inline parent saved
-from django.db.models import signals
-signals.post_save.connect(GenotypeGene.post_save, sender=GenotypeGene)
-signals.post_delete.connect(GenotypeGene.post_delete, sender=GenotypeGene)
+def connect_signals():
+    signals.post_save.connect(Genotype.post_save, sender=Genotype)
+    signals.post_save.connect(GenotypeGene.post_save, sender=GenotypeGene)
+    signals.post_delete.connect(GenotypeGene.post_delete, sender=GenotypeGene)
+
+def disconnect_signals():
+    signals.post_save.disconnect(Genotype.post_save, sender=Genotype)
+    signals.post_save.disconnect(GenotypeGene.post_save, sender=GenotypeGene)
+    signals.post_delete.disconnect(GenotypeGene.post_delete, sender=GenotypeGene)
+
+connect_signals()

@@ -8,13 +8,13 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.core import serializers
 from django.db.models.loading import get_model
+from django.db import transaction, connection
 from django.utils import simplejson
 
 from optparse import make_option
 
-from pyyajl import YajlContentBuilder, YajlParser
-
 from django_analyze import models
+from django_analyze.yajl_simple import YajlContentBuilder, YajlParser
 
 def flatten_list(lst):
     new = []
@@ -31,13 +31,12 @@ def find_object_pk(model, obj, data):
     """
     assert hasattr(model, 'natural_key_fields'), \
         'Model %s must define natural_key_fields.' % (model.__name__,)
+    assert hasattr(model.objects, 'get_by_natural_key'), \
+        'Model manager for %s must implement get_by_natural_key(*args, **kwargs).' % (model.__name__,)
     #print 'natural key:',obj.natural_key()
     keys = [data['fields'][_] for _ in model.natural_key_fields]
     keys = flatten_list(keys)
-    #print 'keys:',keys
     obj = model.objects.get_by_natural_key(*keys)
-    #print 'obj:',obj
-    #print 'obj.pk:',obj.pk, obj.id
     if hasattr(obj, 'pk'):
         return obj.pk
     return obj.id
@@ -49,9 +48,10 @@ class ContentBuilderOnMap(YajlContentBuilder):
         if self.map_depth == 0:
             # Process a single record in JSON format.
             data = ret.obj
-            pprint(data, indent=4)
+            #pprint(data, indent=4)
             model = get_model(*data['model'].split('.', 1))
-            assert hasattr(model, 'natural_key_fields'), 'Model %s must define natural_key_fields.' % (model.__name__,)
+            assert hasattr(model, 'natural_key_fields'), \
+                'Model %s must define natural_key_fields.' % (model.__name__,)
 #            print '!'*80
 #            print 'model:',model
 #            print 'data:',data
@@ -84,10 +84,34 @@ class Command(BaseCommand):
     )
 
     def handle(self, fn, **options):
-        handler = ContentBuilderOnMap()
-        parser = YajlParser(handler)
-        parser.parse(open(fn))
-        #pprint(handler.data, indent=4)
-#        print type(handler.data)
-#        print type(handler.data[0])
-#        
+        models.disable_fingerprint_check()
+        models.disable_validation_check()
+        tmp_debug = settings.DEBUG
+        settings.DEBUG = False
+        transaction.enter_transaction_management()
+        transaction.managed(True)
+        success = True
+        try:
+            handler = ContentBuilderOnMap()
+            parser = YajlParser(handler)
+            parser.parse(open(fn))
+        except Exception, e:
+            success = False
+            raise
+        finally:
+            settings.DEBUG = tmp_debug
+            if success:
+                print 'Committing...'
+                transaction.commit()
+            else:
+                print 'Rolling back...'
+                transaction.rollback()
+            transaction.leave_transaction_management()
+            connection.close()
+            models.enable_fingerprint_check()
+            models.enable_validation_check()
+        if success:
+            print 'Success!'
+        else:
+            print 'Failure!'
+            
