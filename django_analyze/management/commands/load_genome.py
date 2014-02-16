@@ -1,5 +1,8 @@
 import re
 import sys
+import time
+from datetime import datetime, timedelta
+import commands
 from pprint import pprint
 
 import django
@@ -43,12 +46,33 @@ def find_object_pk(model, obj, data):
 
 class ContentBuilderOnMap(YajlContentBuilder):
     
+    total_objects = 0
+    current_objects = 0
+    t0 = None
+    
     def yajl_end_map(self, *args, **kwargs):
         ret = super(ContentBuilderOnMap, self).yajl_end_map(*args, **kwargs)
         if self.map_depth == 0:
             # Process a single record in JSON format.
+            self.current_objects += 1
             data = ret.obj
+            
             #pprint(data, indent=4)
+            
+            if not self.current_objects % 100:
+                current_seconds = time.time() - self.t0
+                total_seconds = current_seconds * self.total_objects / float(self.current_objects)
+                remaining_seconds = total_seconds - current_seconds
+                eta = datetime.now() + timedelta(seconds=remaining_seconds)
+                print '\rLoading object %i of %i (%.02f%% eta = %s)' % (
+                    self.current_objects,
+                    self.total_objects,
+                    self.current_objects/float(self.total_objects)*100,
+                    eta,
+                ),
+                sys.stdout.flush()
+            
+            
             model = get_model(*data['model'].split('.', 1))
             assert hasattr(model, 'natural_key_fields'), \
                 'Model %s must define natural_key_fields.' % (model.__name__,)
@@ -65,7 +89,7 @@ class ContentBuilderOnMap(YajlContentBuilder):
                 # Even if the deserialized_object is created from a record
                 # retrieved from get_by_natural_key() it will still not have
                 # a pk, causing a new record to be created if save() is called.
-                # So to avoid created duplicate records, we have to
+                # So to avoid creating duplicate records, we have to
                 # additionally lookup the pk.
                 pk = find_object_pk(model, obj, data)
                 #print 'pk:',pk
@@ -93,7 +117,15 @@ class Command(BaseCommand):
         success = True
         try:
             handler = ContentBuilderOnMap()
+            
+            # Estimate total objects in the file without loading it completely.
+            # Assumes the object's end bracket is at the start of a line.
+            print 'Counting total objects in %s...' % (fn,)
+            handler.total_objects = int(commands.getoutput('cat "%s" | grep -c "^\}"' % (fn,)))
+            handler.t0 = time.time()
+            
             parser = YajlParser(handler)
+            print 'Loading objects in %s...' % (fn,)
             parser.parse(open(fn))
         except Exception, e:
             success = False

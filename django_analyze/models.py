@@ -745,7 +745,7 @@ class Genome(BaseModel):
             #TODO:how to handle species that need to be deleted?
             missing_species = max(0, self.max_species - self.species.all().count())
             for _ in xrange(missing_species):
-                print 'creating',_
+                #print 'creating',_
                 species = Species(genome=self)
                 species.save()
                 
