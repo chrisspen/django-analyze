@@ -20,7 +20,7 @@ import django
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models, DatabaseError, connection, reset_queries
+from django.db import models, DatabaseError, connection, reset_queries, transaction
 from django.db.models import Sum, Count, Max, Min, Q, F
 from django.db.utils import IntegrityError
 from django.utils import timezone
@@ -733,6 +733,14 @@ class Genome(BaseModel):
         return (self.name,)
     natural_key.dependencies = []
     
+    def create_blank_genotype(self, generation=1):
+        """
+        Creates a new genotype without any genes.
+        """
+        new_genotype = Genotype(genome=self, generation=generation)
+        new_genotype.save(check_fingerprint=False)
+        return new_genotype
+    
     @property
     def complete_genotypes(self):
         return self.genotypes.filter(fitness__isnull=False, fresh=True, valid=True)
@@ -896,15 +904,15 @@ class Genome(BaseModel):
         values = [gene.get_max_value_count() for gene in self.genes.all()]
         return utils.sci_notation(reduce(operator.mul, values, 1))
     
-    def is_allowable_gene(self, priors, next):
+    def is_allowable_gene(self, priors, next_gene):
         """
-        Given a dict of {gene:value} representing a hypothetical genotype,
+        Given a dict of prior {gene:value} representing a hypothetical genotype,
         determines if the next proposed gene is applicable.
         """
-        assert isinstance(next, Gene)
-        if not next.dependee_gene:
+        assert isinstance(next_gene, Gene)
+        if not next_gene.dependee_gene:
             return True
-        elif priors.get(next.dependee_gene) == next.dependee_value:
+        elif priors.get(next_gene.dependee_gene) == next_gene.dependee_value:
             return True
         return False
     
@@ -912,39 +920,29 @@ class Genome(BaseModel):
         """
         Generates a genotype with a random assortment of genes.
         """
+        print 'creating random genotype'
+        new_genotype = self.create_blank_genotype()
         d = {}
+        new_ggenes = []
         for gene in self.genes.all().order_by('-dependee_gene__id'):
-            if not self.is_allowable_gene(priors=d, next=gene):
+            if not self.is_allowable_gene(priors=d, next_gene=gene):
                 continue
             d[gene] = gene.get_random_value()
-        new_genotype = Genotype(genome=self)
-        new_genotype.save(check_fingerprint=False)
-        GenotypeGene.objects.bulk_create([
-            GenotypeGene(genotype=new_genotype, gene=gene, _value=str(value))
-            for gene, value in d.iteritems()
-        ])
-        try:
-            new_genotype.save() # Might raise fingerprint error
-        except ValidationError, e:
-            print>>sys.stderr, '!'*80
-            print>>sys.stderr, 'Validation Error: %s' % (e,)
-            sys.stderr.flush()
-            connection._rollback()
-        except IntegrityError, e:
-            print>>sys.stderr, '!'*80
-            print>>sys.stderr, 'Integrity Error: %s' % (e,)
-            sys.stderr.flush()
-            connection._rollback()
+            new_ggenes.append(GenotypeGene(genotype=new_genotype, gene=gene, _value=str(d[gene])))
+        GenotypeGene.objects.bulk_create(new_ggenes)
         return new_genotype
     
     def create_hybrid_genotype(self, genotypeA, genotypeB):
-        from collections import defaultdict
-        new_genotype = Genotype(
-            genome=self,
+        """
+        Returns a new genotype that is a mixture of the two parents.
+        """
+        print 'creating hybrid genotype'
+        new_genotype = self.create_blank_genotype(
             generation=max(genotypeA.generation, genotypeB.generation)+1,
         )
-        new_genotype.save(check_fingerprint=False)
         
+        # Lookup all genes and gene values for both parents
+        # so we can quickly access them below.
         all_values = defaultdict(list) # {gene:[values]}
         for gene in genotypeA.genes.all():
             all_values[gene.gene].append(gene.value)
@@ -958,44 +956,29 @@ class Genome(BaseModel):
         # Order independent genes first so we don't automatically ignore
         # dependent genes just because we haven't added their dependee yet.
         genes = sorted(all_values.iterkeys(), key=lambda gene: gene.dependee_gene)
-#        print
-#        print 'new_genotype:',new_genotype
-#        print 'genes:',genes
-#        print 'all_values:',all_values
-        sys.stdout.flush()
+        ggenes = []
         for gene in genes:
-            if not self.is_allowable_gene(priors=priors, next=gene):
+            if not self.is_allowable_gene(priors=priors, next_gene=gene):
                 continue
             new_value = random.choice(all_values[gene])
-#            print 'new gene:',gene,new_value
-            new_gene = GenotypeGene.objects.create(
+            ggenes.append(GenotypeGene(
                 genotype=new_genotype,
                 gene=gene,
-                _value=new_value)
+                _value=new_value))
             priors[gene] = new_value
-#        print 'priors:',priors
-        self.add_missing_genes(new_genotype)
-        new_genotype.delete_illegal_genes()
-        new_genotype.fingerprint = None
-        new_genotype.fingerprint_fresh = False
-        new_genotype.save(check_fingerprint=False)
-        try:
-            new_genotype.save() # Might raise fingerprint error
-        except ValidationError, e:
-            print>>sys.stderr, '!'*80
-            print>>sys.stderr, 'Validation Error: %s' % (e,)
-            sys.stderr.flush()
-            connection._rollback()
-        except IntegrityError, e:
-            print>>sys.stderr, '!'*80
-            print>>sys.stderr, 'Integrity Error: %s' % (e,)
-            sys.stderr.flush()
-            connection._rollback()
+        
+        GenotypeGene.objects.bulk_create(ggenes)
+        
         return new_genotype
         
     def create_mutant_genotype(self, genotype):
-        new_genotype = Genotype(genome=self, generation=genotype.generation+1)
-        new_genotype.save(check_fingerprint=False)
+        """
+        Returns a new genotype that is a slight random modification of the
+        given parent.
+        """
+        print 'creating mutant genotype'
+        new_genotype = self.create_blank_genotype(generation=genotype.generation+1)
+        
         priors = {}
         
         ggenes = genotype.genes.order_by('-gene__dependee_gene__id')
@@ -1006,35 +989,22 @@ class Genome(BaseModel):
         # Randomly select K elements and add weight then do weighted selection.
         k = max(1, int(round(self.mutation_rate * ggene_count, 0)))
         mutated_genes = set(utils.weighted_samples(choices=ggene_weights, k=k))
+        new_ggenes = []
         for ggene in ggenes.iterator():
-#            if not self.is_allowable_gene(priors=priors, next=gene.gene):
+#            if not self.is_allowable_gene(priors=priors, next_gene=gene.gene):
 #                continue
             new_gene = ggene
             new_gene.id = None
             new_gene.genotype = new_genotype
 #            if random.random() <= self.mutation_rate:
             if ggene in mutated_genes:
-                print 'Mutating gene:',ggene
-                new_gene._value = ggene.get_random_value()
-            new_gene.save()
-#            priors[new_gene.gene] = new_gene._value
-            
-        self.add_missing_genes(new_genotype)
-        new_genotype.fingerprint = None
-        new_genotype.fingerprint_fresh = False
-        new_genotype.save(check_fingerprint=False)
-        try:
-            new_genotype.save() # Might raise fingerprint error
-        except ValidationError, e:
-            print>>sys.stderr, '!'*80
-            print>>sys.stderr, 'Validation Error: %s' % (e,)
-            sys.stderr.flush()
-            connection._rollback()
-        except IntegrityError, e:
-            print>>sys.stderr, '!'*80
-            print>>sys.stderr, 'Integrity Error: %s' % (e,)
-            sys.stderr.flush()
-            connection._rollback()
+                old_value = new_gene._value
+                new_gene._value = ggene.gene.get_random_value()
+                print 'Mutating gene %s from %s to %s.' % (ggene, old_value, new_gene._value)
+            new_ggenes.append(new_gene)
+        
+        GenotypeGene.objects.bulk_create(new_ggenes)
+        
         return new_genotype
     
     @property
@@ -1072,66 +1042,106 @@ class Genome(BaseModel):
         max_retries = 10
         last_pending = None
         populate_count = 0
-        max_populate_retries = 1000
+        max_populate_retries = 10
         print 'Populating genotypes...'
-        while 1:
-            
-            # Delete failed and/or corrupted genotypes.
-            self.delete_corrupt()
-            
-            #TODO:only look at fitness__isnull=True if maximum_population=0 or delete_inferiors=False?
-            pending = self.pending_genotypes.count()
-            if pending >= self.maximum_population:
-                print 'Maximum unevaluated population has been reached.'
-                break
-            
-            # If there are literally no more unique combinations to find,
-            # then don't bother.
-            if self.genotypes.count() >= self.total_possible_genotypes():
-                print 'Maximum theoretical population has been reached.'
-                break
-            
-            # Note, because we don't have a good way of avoiding hash collisons
-            # due to the creation of duplicate genotypes, it's possible we may
-            # not generate unique genotypes within a reasonable amount of time
-            # so we keep track of our failures and stop after too many
-            # attempts.
-            if last_pending is not None and last_pending == pending:
-                populate_count += 1
-                if populate_count > max_populate_retries:
+        transaction.enter_transaction_management()
+        transaction.managed(True)
+        try:
+            while 1:
+                
+                # Delete failed and/or corrupted genotypes.
+                self.delete_corrupt()
+                
+                #TODO:only look at fitness__isnull=True if maximum_population=0 or delete_inferiors=False?
+                pending = self.pending_genotypes.count()
+                if pending >= self.maximum_population:
+                    print 'Maximum unevaluated population has been reached.'
                     break
-            else:
-                populate_count = 0
-            print ('='*80)+'\nAttempt %i of %i to create %i, currently %i' % (
-                populate_count,
-                max_populate_retries,
-                self.maximum_population,
-                pending)
-            sys.stdout.flush()
-            
-            valid_genotypes = self.valid_genotypes
-            random_valid_genotypes = valid_genotypes.order_by('?')
-            last_pending = pending
-            creation_type = random.randint(1,10)
-            for retry in xrange(max_retries):
-                genotype = None
-#                try:
-                if valid_genotypes.count() <= 1 or creation_type == 1:
-                    genotype = self.create_random_genotype()
-                elif valid_genotypes.count() >= 2 and creation_type < 5:
-                    a = utils.weighted_choice(
-                        random_valid_genotypes,
-                        get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
-                        get_weight=lambda o:o.fitness)
-                    b = utils.weighted_choice(
-                        random_valid_genotypes,
-                        get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
-                        get_weight=lambda o:o.fitness)
-                    #genotype = self.create_hybrid_genotype(random_valid_genotypes[0], random_valid_genotypes[1])
-                    genotype = self.create_hybrid_genotype(a, b)
+                
+                # If there are literally no more unique combinations to find,
+                # then don't bother.
+                if self.genotypes.count() >= self.total_possible_genotypes():
+                    print 'Maximum theoretical population has been reached.'
+                    break
+                
+                # Note, because we don't have a good way of avoiding hash collisons
+                # due to the creation of duplicate genotypes, it's possible we may
+                # not generate unique genotypes within a reasonable amount of time
+                # so we keep track of our failures and stop after too many
+                # attempts.
+                if last_pending is not None and last_pending == pending:
+                    populate_count += 1
+                    if populate_count > max_populate_retries:
+                        break
                 else:
-                    genotype = self.create_mutant_genotype(random_valid_genotypes[0])
-                break
+                    populate_count = 0
+                    
+                print
+                print ('='*80)+('\nAttempt %i of %i to create new genotype %i of %i (%.02f%%)' % (
+                    populate_count,
+                    max_populate_retries,
+                    pending,
+                    self.maximum_population,
+                    pending/float(self.maximum_population)*100,
+                ))
+                sys.stdout.flush()
+                
+                valid_genotypes = self.valid_genotypes
+                random_valid_genotypes = valid_genotypes.order_by('?')
+                last_pending = pending
+                creation_type = random.randint(1,11)
+                print 'creation_type:',creation_type
+                print 'valid_genotypes:',valid_genotypes.count()
+                for retry in xrange(max_retries):
+                    try:
+                        print 'Sub-attempt %i of %i.' % (retry+1, max_retries)
+                        
+                        # Create a new genotype in one of three ways.
+                        if valid_genotypes.count() <= 1 or creation_type == 1:
+                            new_genotype = self.create_random_genotype()
+                        elif valid_genotypes.count() >= 2 and creation_type < 5:
+                            a = utils.weighted_choice(
+                                random_valid_genotypes,
+                                get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
+                                get_weight=lambda o:o.fitness)
+                            b = utils.weighted_choice(
+                                random_valid_genotypes,
+                                get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
+                                get_weight=lambda o:o.fitness)
+                            new_genotype = self.create_hybrid_genotype(a, b)
+                        else:
+                            new_genotype = self.create_mutant_genotype(random_valid_genotypes[0])
+                        
+                        self.add_missing_genes(new_genotype)
+                        new_genotype.fingerprint = None
+                        new_genotype.fingerprint_fresh = False
+                        
+                        # Might raise fingerprint conflict error.
+                        new_genotype.save(check_fingerprint=True)
+                        
+                        break
+#                    except ValidationError, e:
+#                        print>>sys.stderr, '!'*80
+#                        print>>sys.stderr, 'Validation Error: %s' % (e,)
+#                        sys.stderr.flush()
+#                        #connection._rollback()
+#                        transaction.rollback()
+#                    except IntegrityError, e:
+#                        print>>sys.stderr, '!'*80
+#                        print>>sys.stderr, 'Integrity Error: %s' % (e,)
+#                        sys.stderr.flush()
+#                        #connection._rollback()
+#                        transaction.rollback()
+                    except Exception, e:
+                        transaction.rollback()
+                        raise
+                    else:
+                        transaction.commit()
+                
+        finally:
+            transaction.commit()
+            transaction.leave_transaction_management()
+            connection.close()
     
     @property
     def evaluator_function(self):
@@ -1174,74 +1184,6 @@ class Genome(BaseModel):
                 genotype_ids.add(missing.genotype_id)
                 missing.create()
         Genotype.mark_stale(genotype_ids, save=save)
-        
-#        while 1:
-#            added = False
-#            
-#            # Add missing independent genes.
-#            independent_genes = self.genes.filter(dependee_gene__isnull=True)
-#            incomplete_genotype_ids = set()
-#            #TODO:inefficient, just use simple left outer join instead?
-#            for igene in independent_genes:
-#                incomplete_genotype_ids.update(Genotype.objects.exclude(genes__gene=igene).values_list('id', flat=True))
-#            q = Genotype.objects.filter(id__in=incomplete_genotype_ids)
-#            if genotype:
-#                q = q.filter(id=genotype.id)
-##            print 'add_missing_genes.q:',q
-##            sys.exit()#TODO:remove
-#            for gt in q.iterator():
-#                print 'add_missing_genes.current_genes:',gt.genes.all()
-#                missing_genes = independent_genes.exclude(id__in=gt.genes.values_list('gene__id', flat=True))
-#                print 'add_missing_genes.gt:',missing_genes
-#                just_added = False
-#                for gene in missing_genes.iterator():
-#                    GenotypeGene.objects.get_or_create(genotype=gt, gene=gene, _value=gene.default)#TODO:enforce valid default if values set?
-#                    added = True
-#                    just_added = True
-#                if just_added:
-#                    # If we just added genes, we may have changed the
-#                    # fingerprint to one that may collide with another
-#                    # genotype.
-#                    try:
-#                        gt.fingerprint_fresh = False
-#                        gt.save()
-#                    except DatabaseError, e:
-#                        print>>sys.stderr, '!'*80
-#                        print>>sys.stderr, 'Add missing genes error: %s' % (e,)
-#                        sys.stderr.flush()
-#                        connection._rollback() # Needed by Postgres.
-#            
-#            # Add missing dependent genes.
-#            dependent_genes = self.genes.filter(dependee_gene__isnull=False)
-#            q = self.genotypes.exclude(genes__gene__id__in=dependent_genes.values_list('id', flat=True))
-#            if genotype:
-#                q = q.filter(id=genotype.id)
-#            #print 'q:',q
-#            for gt in q.iterator():
-#                missing_genes = [
-#                    dependent_gene for dependent_gene in dependent_genes.exclude(id__in=gt.genes.values_list('gene__id', flat=True))
-#                    if gt.genes.filter(gene=dependent_gene.dependee_gene, _value=dependent_gene.dependee_value).count()]
-#                #print 'gt:',missing_genes
-#                just_added = False
-#                for gene in missing_genes:
-#                    GenotypeGene.objects.get_or_create(genotype=gt, gene=gene, _value=gene.default)
-#                    added = True
-#                    just_added = True
-#                if just_added:
-#                    # If we just added genes, we may have changed the
-#                    # fingerprint to one that may collide with another
-#                    # genotype.
-#                    try:
-#                        gt.fingerprint_fresh = False
-#                        gt.save()
-#                    except DatabaseError, e:
-#                        print>>sys.stderr, '!'*80
-#                        print>>sys.stderr, 'Add missing genes error: %s' % (e,)
-#                        sys.stderr.flush()
-#                        connection._rollback() # Needed by Postgres.
-#                
-#            if not added:
-#                break
                 
     def evolve(self,
         genotype_id=None,
@@ -1597,14 +1539,14 @@ class Gene(BaseModel):
             return random.choice(values_list)
         elif self.type == c.GENE_TYPE_INT:
             assert (self.min_value and self.max_value) or (self.default and self.max_increment)
-            print 'min/max:',self.name,self.min_value,self.max_value
+            #print 'min/max:',self.name,self.min_value,self.max_value
             if self.min_value and self.max_value:
                 return random.randint(int(self.min_value), int(self.max_value))
             else:
                 return random.randint(-int(self.max_increment), int(self.max_increment)) + int(self.default)
         elif self.type == c.GENE_TYPE_FLOAT:
             assert (self.min_value and self.max_value) or (self.default and self.max_increment)
-            print 'min/max:',self.name,self.min_value,self.max_value
+            #print 'min/max:',self.name,self.min_value,self.max_value
             if self.min_value and self.max_value:
                 return random.uniform(float(self.min_value), float(self.max_value))
             else:
@@ -1614,6 +1556,8 @@ class Gene(BaseModel):
         elif self.type == c.GENE_TYPE_STR:
             raise NotImplementedError, \
                 'Cannot generate a random value for a string with no values.'
+        else:
+            raise NotImplementedError, 'Unknown type: %s' % (self.type,)
     
     def get_default(self):
         if self.default is None:
@@ -2114,11 +2058,8 @@ class GenotypeGeneMissing(BaseModel):
         GenotypeGene.objects.create(
             genotype=self.genotype,
             gene=self.gene,
-            _value=self.default,
+            _value=self.gene.get_random_value(),
         )
-#        Genotype.objects\
-#            .filter(id=self.genotype_id)\
-#            .update(fingerprint_fresh=False)
 
 class GenotypeGeneManager(models.Manager):
     
@@ -2207,44 +2148,6 @@ class GenotypeGene(BaseModel):
             return False
         return True
     is_legal.boolean = True
-    
-    def get_random_value(self):
-        if self.gene.type == c.GENE_TYPE_BOOL:
-            return not self.value
-        elif self.gene.type == c.GENE_TYPE_INT:
-            if self.gene.values:
-                return random.choice(self.gene.get_values_list())
-            else:
-                inc = int(float(self.gene.max_increment))
-                max_value = float(self.gene.max_value) if self.gene.max_value else None
-                min_value = float(self.gene.min_value) if self.gene.min_value else None
-                new_value = random.randint(-inc, inc) + self.value
-                if max_value is not None:
-                    new_value = min(new_value, max_value)
-                if min_value is not None:
-                    new_value = max(new_value, min_value)
-                return new_value
-        elif self.gene.type == c.GENE_TYPE_FLOAT:
-            if self.gene.values:
-                return random.choice(self.gene.get_values_list())
-            else:
-                inc = float(self.gene.max_increment)
-                max_value = float(self.gene.max_value) if self.gene.max_value else None
-                min_value = float(self.gene.min_value) if self.gene.min_value else None
-                new_value = random.uniform(-inc, inc) + self.value
-                if max_value is not None:
-                    new_value = min(new_value, max_value)
-                if min_value is not None:
-                    new_value = max(new_value, min_value)
-                return new_value
-        elif self.gene.type == c.GENE_TYPE_STR:
-            if self.gene.values:
-                return random.choice(self.gene.get_values_list())
-            else:
-                #TODO:any other way to randomize a string without discrete values?
-                return self.value
-        else:
-            raise NotImplementedError
         
     def clean(self, *args, **kwargs):
         """
