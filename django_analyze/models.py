@@ -1258,15 +1258,17 @@ class Genome(BaseModel):
                 # Delete genotypes that are incomplete or duplicates.
                 print 'Deleting corrupt genotypes...'
                 self.delete_corrupt()
+            
+                # Creates the initial genotypes.
+                # Note, must come before add_missing_genes in case hybridization
+                # results in gene loss.
+                if populate:
+                    print 'Populating...'
+                    self.populate()
                 
                 # Add missing genes to genotypes.
                 print 'Adding missing genes...'
                 self.add_missing_genes()
-            
-                # Creates the initial genotypes.
-                if populate:
-                    print 'Populating...'
-                    self.populate()
                 
                 # Evaluate un-evaluated genotypes.
                 #max_fitness = self.max_fitness
@@ -1298,6 +1300,8 @@ class Genome(BaseModel):
                         genome.epoches_since_improvement += 1
                         #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
                         genome.save()
+                        self.epoche = genome.epoche
+                        self.epoches_since_improvement = genome.epoches_since_improvement
                 else:
                     return
                 

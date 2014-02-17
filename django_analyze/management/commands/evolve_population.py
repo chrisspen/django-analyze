@@ -31,6 +31,7 @@ class Command(BaseCommand):
         if genotype_id:
             q = q.filter(genotypes__id=genotype_id)
         total = q.count()
+        print '%i genomes found.' % total
         i = 0
         #TODO:multiprocessing, warning this may corrupt django's cache
         for genome in q.iterator():
