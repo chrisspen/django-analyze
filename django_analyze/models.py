@@ -988,7 +988,8 @@ class Genome(BaseModel):
         
         # Randomly select K elements and add weight then do weighted selection.
         k = max(1, int(round(self.mutation_rate * ggene_count, 0)))
-        mutated_genes = set(utils.weighted_samples(choices=ggene_weights, k=k))
+        mutated_genes = set(_.gene.name for _ in utils.weighted_samples(choices=ggene_weights, k=k))
+        print '%i mutated genes' % len(mutated_genes), ', '.join(sorted(_ for _ in mutated_genes))
         new_ggenes = []
         for ggene in ggenes.iterator():
 #            if not self.is_allowable_gene(priors=priors, next_gene=gene.gene):
@@ -997,10 +998,10 @@ class Genome(BaseModel):
             new_gene.id = None
             new_gene.genotype = new_genotype
 #            if random.random() <= self.mutation_rate:
-            if ggene in mutated_genes:
+            if ggene.gene.name in mutated_genes:
                 old_value = new_gene._value
                 new_gene._value = ggene.gene.get_random_value()
-                print 'Mutating gene %s from %s to %s.' % (ggene, old_value, new_gene._value)
+                #print 'Mutating gene %s from %s to %s.' % (ggene.gene.name, old_value, new_gene._value)
             new_ggenes.append(new_gene)
         
         GenotypeGene.objects.bulk_create(new_ggenes)
@@ -1030,6 +1031,10 @@ class Genome(BaseModel):
         if total:
             print 'Deleting illegal genes from %i genotypes.' % (total,)
             for gt in q.iterator():
+                #print 'gt:',gt
+                assert isinstance(gt, (int, Genotype))
+                if isinstance(gt, int):
+                    gt = Genotype.objects.get(id=gt)
                 gt.delete_illegal_genes(save=save)
                 genotype_ids.add(gt.id)
         Genotype.mark_stale(genotype_ids, save=save)
@@ -1078,7 +1083,7 @@ class Genome(BaseModel):
                     
                 print
                 print ('='*80)+('\nAttempt %i of %i to create new genotype %i of %i (%.02f%%)' % (
-                    populate_count,
+                    populate_count+1,
                     max_populate_retries,
                     pending,
                     self.maximum_population,
@@ -1178,8 +1183,9 @@ class Genome(BaseModel):
             i = 0
             for missing in q.iterator():
                 i += 1
-                print '\rAdding gene value %i of %i...' % (i, total),
-                sys.stdout.flush()
+                if not i % 10:
+                    print '\rAdding gene value %i of %i...' % (i, total),
+                    sys.stdout.flush()
                 genotype_ids.add(missing.genotype_id)
                 missing.create()
             # Check a second time in case we added a dependee gene
@@ -1210,6 +1216,10 @@ class Genome(BaseModel):
         settings.DEBUG = False
         try:
             while 1:
+                
+                # Reset stuck genotypes.
+                self.genotypes.filter(evaluating=True)\
+                    .update(evaluating=False, evaluating_pid=None)
                 
                 #TODO:Delete the worst if population at max.
                 

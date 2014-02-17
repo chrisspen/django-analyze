@@ -357,6 +357,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     search_fields = (
         'genes___value',
+        'error',
     )
     
     raw_id_fields = (
