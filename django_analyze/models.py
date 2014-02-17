@@ -712,11 +712,13 @@ class Genome(BaseModel):
     
     evaluating_part = models.PositiveIntegerField(
         default=0,
+        #help_text=_('?'),
     )
     
     ratio_evaluated = models.FloatField(
         blank=True,
         null=True,
+        #help_text=_('?'),
     )
     
     class Meta:
@@ -730,6 +732,25 @@ class Genome(BaseModel):
     def natural_key(self):
         return (self.name,)
     natural_key.dependencies = []
+    
+    @property
+    def complete_genotypes(self):
+        return self.genotypes.filter(fitness__isnull=False, fresh=True, valid=True)
+    
+    @property
+    def invalid_genotypes(self):
+        return self.genotypes.filter(valid=False)
+    
+    @property
+    def evaluating_genotypes(self):
+        return self.genotypes.filter(evaluating=True)
+    
+    @property
+    def pending_genotypes(self):
+        """
+        Returns genotypes that have not yet had their fitness evaluated.
+        """
+        return self.genotypes.filter(fresh=False, evaluating=False)
     
     def save(self, *args, **kwargs):
         
@@ -1015,13 +1036,6 @@ class Genome(BaseModel):
             sys.stderr.flush()
             connection._rollback()
         return new_genotype
-    
-    @property
-    def pending_genotypes(self):
-        """
-        Returns genotypes that have not yet had their fitness evaluated.
-        """
-        return self.genotypes.filter(fresh=False, evaluating=False)
     
     @property
     def valid_genotypes(self):
@@ -1358,13 +1372,13 @@ class Genome(BaseModel):
             
             # Run the backend evaluator.
             try:
+                gt.error = None # This may be overriden
                 self.evaluator_function(gt)
                 gt.fitness_evaluation_datetime = timezone.now()
+                gt.fresh = True # evaluated, even if failed
                 gt.evaluating = False
                 gt.evaluating_pid = None
-                gt.fresh = True
-                gt.valid = True
-                gt.error = None
+                gt.valid = not gt.error
                 gt.save()
                 reset_queries()
             except Exception, e:

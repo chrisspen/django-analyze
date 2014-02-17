@@ -146,7 +146,6 @@ class GenomeAdmin(BaseModelAdmin):
         'epoches_since_improvement',
         'min_fitness',
         'max_fitness',
-        'improving',
     )
     
     search_fields = (
@@ -154,18 +153,67 @@ class GenomeAdmin(BaseModelAdmin):
     )
     
     readonly_fields = (
-        'total_possible_genotypes',
-        'genotypes_link',
         'genes_link',
         'species_link',
         'max_fitness',
         'min_fitness',
         #'epoches_since_improvement',
         'improving',
+        'total_possible_genotypes',
+        'genotypes_link',
+        'complete_genotypes_link',
+        'invalid_genotypes_link',
+        'evaluating_genotypes_link',
+        'pending_genotypes_link',
     )
     
     actions = (
         'organize_species',
+    )
+    
+    fieldsets = (
+        (None, {
+            'fields': (
+                'name',
+                'evaluator',
+                'total_possible_genotypes',
+            )
+        }),
+        ('Progress', {
+            'fields': (
+                'improving',
+                'epoche',
+                'epoches_since_improvement',
+                'min_fitness',
+                'max_fitness',
+                'evaluating_part',
+                'ratio_evaluated',
+            )
+        }),
+        ('Related models', {
+            'fields': (
+                'genes_link',
+                'species_link',
+                'genotypes_link',
+                'complete_genotypes_link',
+                'invalid_genotypes_link',
+                'evaluating_genotypes_link',
+                'pending_genotypes_link',
+            )
+        }),
+        ('Options', {
+            'fields': (
+                'maximum_population',
+                'maximum_evaluated_population',
+                'mutation_rate',
+                'evaluation_timeout',
+                'epoche_stall',
+                'max_species',
+                'delete_inferiors',
+                'production_genotype_auto',
+                'production_genotype',
+            )
+        }),
     )
     
     def organize_species(self, request, queryset):
@@ -189,7 +237,35 @@ class GenomeAdmin(BaseModelAdmin):
             return ''
         return view_related_link(obj, 'genotypes')
     genotypes_link.allow_tags = True
-    genotypes_link.short_description = 'genotypes'
+    genotypes_link.short_description = 'genotypes (all)'
+    
+    def complete_genotypes_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'complete_genotypes', extra='&fitness__isnull=False&fresh__exact=1&valid__exact=1')
+    complete_genotypes_link.allow_tags = True
+    complete_genotypes_link.short_description = 'genotypes (complete)'
+    
+    def invalid_genotypes_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'invalid_genotypes', extra='&valid__exact=0')
+    invalid_genotypes_link.allow_tags = True
+    invalid_genotypes_link.short_description = 'genotypes (invalid)'
+    
+    def evaluating_genotypes_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'evaluating_genotypes', extra='&evaluating__exact=1')
+    evaluating_genotypes_link.allow_tags = True
+    evaluating_genotypes_link.short_description = 'genotypes (evaluating)'
+    
+    def pending_genotypes_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'pending_genotypes', extra='&fresh__exact=0&evaluating__exact=0')
+    pending_genotypes_link.allow_tags = True
+    pending_genotypes_link.short_description = 'genotypes (pending)'
     
     def genes_link(self, obj=None):
         try:
