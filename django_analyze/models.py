@@ -1120,19 +1120,23 @@ class Genome(BaseModel):
                         new_genotype.save(check_fingerprint=True)
                         
                         break
-#                    except ValidationError, e:
-#                        print>>sys.stderr, '!'*80
-#                        print>>sys.stderr, 'Validation Error: %s' % (e,)
-#                        sys.stderr.flush()
-#                        #connection._rollback()
-#                        transaction.rollback()
-#                    except IntegrityError, e:
-#                        print>>sys.stderr, '!'*80
-#                        print>>sys.stderr, 'Integrity Error: %s' % (e,)
-#                        sys.stderr.flush()
-#                        #connection._rollback()
-#                        transaction.rollback()
+                    except ValidationError, e:
+                        # We catch these to explicitly ignore.
+                        print>>sys.stderr, '!'*80
+                        print>>sys.stderr, 'Validation Error: %s' % (e,)
+                        sys.stderr.flush()
+                        #connection._rollback()
+                        transaction.rollback()
+                    except IntegrityError, e:
+                        # We catch these to explicitly ignore.
+                        print>>sys.stderr, '!'*80
+                        print>>sys.stderr, 'Integrity Error: %s' % (e,)
+                        sys.stderr.flush()
+                        #connection._rollback()
+                        transaction.rollback()
                     except Exception, e:
+                        # These we catch to ensure the transaction is cleanly,
+                        # rolled back, but otherwise we want it to continue.
                         transaction.rollback()
                         raise
                     else:
