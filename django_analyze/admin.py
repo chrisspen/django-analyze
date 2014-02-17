@@ -161,10 +161,6 @@ class GenomeAdmin(BaseModelAdmin):
         'improving',
         'total_possible_genotypes',
         'genotypes_link',
-        'complete_genotypes_link',
-        'invalid_genotypes_link',
-        'evaluating_genotypes_link',
-        'pending_genotypes_link',
     )
     
     actions = (
@@ -179,6 +175,13 @@ class GenomeAdmin(BaseModelAdmin):
                 'total_possible_genotypes',
             )
         }),
+        ('Related models', {
+            'fields': (
+                'genes_link',
+                'species_link',
+                'genotypes_link',
+            )
+        }),
         ('Progress', {
             'fields': (
                 'improving',
@@ -188,17 +191,6 @@ class GenomeAdmin(BaseModelAdmin):
                 'max_fitness',
                 'evaluating_part',
                 'ratio_evaluated',
-            )
-        }),
-        ('Related models', {
-            'fields': (
-                'genes_link',
-                'species_link',
-                'genotypes_link',
-                'complete_genotypes_link',
-                'invalid_genotypes_link',
-                'evaluating_genotypes_link',
-                'pending_genotypes_link',
             )
         }),
         ('Options', {
@@ -235,37 +227,32 @@ class GenomeAdmin(BaseModelAdmin):
     def genotypes_link(self, obj=None):
         if not obj:
             return ''
-        return view_related_link(obj, 'genotypes')
+        return view_related_link(
+            obj,
+            'genotypes',
+            template='{count} total') + '&nbsp;' + \
+        view_related_link(
+            obj,
+            'pending_genotypes',
+            extra='&fresh__exact=0&evaluating__exact=0',
+            template='{count} pending') + '&nbsp;' + \
+        view_related_link(
+            obj,
+            'evaluating_genotypes',
+            extra='&evaluating__exact=1',
+            template='{count} evaluating') + '&nbsp;' + \
+        view_related_link(
+            obj,
+            'complete_genotypes',
+            extra='&fitness__isnull=False&fresh__exact=1&valid__exact=1',
+            template='{count} complete') + '&nbsp;' + \
+        view_related_link(
+            obj,
+            'invalid_genotypes',
+            extra='&valid__exact=0',
+            template='{count} invalid')
     genotypes_link.allow_tags = True
-    genotypes_link.short_description = 'genotypes (all)'
-    
-    def complete_genotypes_link(self, obj=None):
-        if not obj:
-            return ''
-        return view_related_link(obj, 'complete_genotypes', extra='&fitness__isnull=False&fresh__exact=1&valid__exact=1')
-    complete_genotypes_link.allow_tags = True
-    complete_genotypes_link.short_description = 'genotypes (complete)'
-    
-    def invalid_genotypes_link(self, obj=None):
-        if not obj:
-            return ''
-        return view_related_link(obj, 'invalid_genotypes', extra='&valid__exact=0')
-    invalid_genotypes_link.allow_tags = True
-    invalid_genotypes_link.short_description = 'genotypes (invalid)'
-    
-    def evaluating_genotypes_link(self, obj=None):
-        if not obj:
-            return ''
-        return view_related_link(obj, 'evaluating_genotypes', extra='&evaluating__exact=1')
-    evaluating_genotypes_link.allow_tags = True
-    evaluating_genotypes_link.short_description = 'genotypes (evaluating)'
-    
-    def pending_genotypes_link(self, obj=None):
-        if not obj:
-            return ''
-        return view_related_link(obj, 'pending_genotypes', extra='&fresh__exact=0&evaluating__exact=0')
-    pending_genotypes_link.allow_tags = True
-    pending_genotypes_link.short_description = 'genotypes (pending)'
+    genotypes_link.short_description = 'genotypes'
     
     def genes_link(self, obj=None):
         try:
