@@ -1746,13 +1746,17 @@ class Genotype(models.Model):
         blank=True,
         null=True,
         db_index=True,
-        editable=False)
+        editable=False,
+        help_text=_('''If implemented by the backend, represents the fraction
+            of cases this genotype successfully addresses.'''))
     
     ontime_ratio = models.FloatField(
         blank=True,
         null=True,
         db_index=True,
-        editable=False)
+        editable=False,
+        help_text=_('''If implemented by the backend, represents the fraction
+            of cases this genotype is able to evaluate within the timeout.'''))
     
     error = models.TextField(
         blank=True,
