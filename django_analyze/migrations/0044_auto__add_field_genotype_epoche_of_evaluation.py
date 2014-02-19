@@ -8,26 +8,15 @@ from django.db import models
 class Migration(SchemaMigration):
 
     def forwards(self, orm):
-        # Adding model 'GeneDependency'
-        db.create_table(u'django_analyze_genedependency', (
-            (u'id', self.gf('django.db.models.fields.AutoField')(primary_key=True)),
-            ('gene', self.gf('django.db.models.fields.related.ForeignKey')(related_name='dependencies', to=orm['django_analyze.Gene'])),
-            ('dependee_gene', self.gf('django.db.models.fields.related.ForeignKey')(related_name='dependents', to=orm['django_analyze.Gene'])),
-            ('dependee_value', self.gf('django.db.models.fields.CharField')(max_length=1000)),
-            ('positive', self.gf('django.db.models.fields.BooleanField')(default=True)),
-        ))
-        db.send_create_signal('django_analyze', ['GeneDependency'])
-
-        # Adding unique constraint on 'GeneDependency', fields ['gene', 'dependee_gene', 'dependee_value']
-        db.create_unique(u'django_analyze_genedependency', ['gene_id', 'dependee_gene_id', 'dependee_value'])
+        # Adding field 'Genotype.epoche_of_evaluation'
+        db.add_column(u'django_analyze_genotype', 'epoche_of_evaluation',
+                      self.gf('django.db.models.fields.PositiveIntegerField')(db_index=True, null=True, blank=True),
+                      keep_default=False)
 
 
     def backwards(self, orm):
-        # Removing unique constraint on 'GeneDependency', fields ['gene', 'dependee_gene', 'dependee_value']
-        db.delete_unique(u'django_analyze_genedependency', ['gene_id', 'dependee_gene_id', 'dependee_value'])
-
-        # Deleting model 'GeneDependency'
-        db.delete_table(u'django_analyze_genedependency')
+        # Deleting field 'Genotype.epoche_of_evaluation'
+        db.delete_column(u'django_analyze_genotype', 'epoche_of_evaluation')
 
 
     models = {
@@ -83,6 +72,7 @@ class Migration(SchemaMigration):
         'django_analyze.genotype': {
             'Meta': {'ordering': "('-fitness',)", 'unique_together': "(('genome', 'fingerprint'),)", 'object_name': 'Genotype', 'index_together': "(('valid', 'fresh', 'fitness'), ('genome', 'fresh'))"},
             'created': ('django.db.models.fields.DateTimeField', [], {'auto_now_add': 'True', 'blank': 'True'}),
+            'epoche_of_evaluation': ('django.db.models.fields.PositiveIntegerField', [], {'db_index': 'True', 'null': 'True', 'blank': 'True'}),
             'error': ('django.db.models.fields.TextField', [], {'null': 'True', 'blank': 'True'}),
             'evaluating': ('django.db.models.fields.BooleanField', [], {'default': 'False', 'db_index': 'True'}),
             'evaluating_pid': ('django.db.models.fields.IntegerField', [], {'null': 'True', 'blank': 'True'}),

@@ -361,6 +361,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'success_ratio',
         'ontime_ratio',
         'generation',
+        'epoche_of_evaluation',
         'fresh',
         'valid',
         'fingerprint_bool',

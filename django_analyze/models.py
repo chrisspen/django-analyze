@@ -1124,6 +1124,7 @@ class Genome(BaseModel):
                         # Might raise fingerprint conflict error.
                         new_genotype.save(check_fingerprint=True)
                         
+                        transaction.commit()
                         break
                     except ValidationError, e:
                         # We catch these to explicitly ignore.
@@ -1144,8 +1145,6 @@ class Genome(BaseModel):
                         # rolled back, but otherwise we want it to continue.
                         transaction.rollback()
                         raise
-                    else:
-                        transaction.commit()
                 
         finally:
             transaction.commit()
@@ -1335,6 +1334,7 @@ class Genome(BaseModel):
                 gt.evaluating = False
                 gt.evaluating_pid = None
                 gt.valid = not gt.error
+                gt.epoche_of_evaluation = self.epoche
                 gt.save()
                 reset_queries()
             except Exception, e:
@@ -1749,7 +1749,13 @@ class Genotype(models.Model):
 #        help_text=_('''If checked, this genotype will not be deleted
 #            even if it becomes unfit.'''))
     
-    #evaluation_epoche = 
+    epoche_of_evaluation = models.PositiveIntegerField(
+        verbose_name=' EOF',
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        help_text=_('The epoche when this genotype was last evaluated.'))
     
     evaluating = models.BooleanField(
         default=False,
