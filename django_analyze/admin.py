@@ -78,6 +78,18 @@ class GeneInline(
         'dependee_gene',
     )
 
+class GeneDependencyInline(
+    #admin.TabularInline
+    admin_steroids.BetterRawIdFieldsTabularInline):
+    
+    model = models.GeneDependency
+    extra = 1
+    fk_name = 'gene'
+    
+    raw_id_fields = (
+        'dependee_gene',
+    )
+
 class GeneAdmin(BaseModelAdmin):
     
     list_display = (
@@ -109,6 +121,10 @@ class GeneAdmin(BaseModelAdmin):
     
     readonly_fields = (
         'values_str',
+    )
+    
+    inlines = (
+        GeneDependencyInline,
     )
     
     def values_str(self, obj=None):
@@ -225,32 +241,35 @@ class GenomeAdmin(BaseModelAdmin):
     species_link.short_description = 'species'
     
     def genotypes_link(self, obj=None):
-        if not obj:
-            return ''
-        return view_related_link(
-            obj,
-            'genotypes',
-            template='{count} total') + '&nbsp;' + \
-        view_related_link(
-            obj,
-            'pending_genotypes',
-            extra='&fresh__exact=0&evaluating__exact=0',
-            template='{count} pending') + '&nbsp;' + \
-        view_related_link(
-            obj,
-            'evaluating_genotypes',
-            extra='&evaluating__exact=1',
-            template='{count} evaluating') + '&nbsp;' + \
-        view_related_link(
-            obj,
-            'complete_genotypes',
-            extra='&fitness__isnull=False&fresh__exact=1&valid__exact=1',
-            template='{count} complete') + '&nbsp;' + \
-        view_related_link(
-            obj,
-            'invalid_genotypes',
-            extra='&valid__exact=0',
-            template='{count} invalid')
+        try:
+            if not obj:
+                return ''
+            return view_related_link(
+                obj,
+                'genotypes',
+                template='{count} total') + '&nbsp;' + \
+            view_related_link(
+                obj,
+                'pending_genotypes',
+                extra='&fresh__exact=0&evaluating__exact=0',
+                template='{count} pending') + '&nbsp;' + \
+            view_related_link(
+                obj,
+                'evaluating_genotypes',
+                extra='&evaluating__exact=1',
+                template='{count} evaluating') + '&nbsp;' + \
+            view_related_link(
+                obj,
+                'complete_genotypes',
+                extra='&fitness__isnull=False&fresh__exact=1&valid__exact=1',
+                template='{count} complete') + '&nbsp;' + \
+            view_related_link(
+                obj,
+                'invalid_genotypes',
+                extra='&valid__exact=0',
+                template='{count} invalid')
+        except Exception, e:
+            return str(e)
     genotypes_link.allow_tags = True
     genotypes_link.short_description = 'genotypes'
     
@@ -357,7 +376,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     search_fields = (
         'genes___value',
-        'error',
+        #'error',
     )
     
     raw_id_fields = (

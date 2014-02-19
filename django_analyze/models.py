@@ -1351,6 +1351,50 @@ class Genome(BaseModel):
                     error=error,
                 )
 
+class GeneDependency(BaseModel):
+    """
+    Defines when a gene can be used if the dependee gene exists
+    in the genotype with the dependee value.
+    
+    When one gene has multiple dependencies, all are accumulated
+    in a disjunction (ORed together), so only one dependency
+    has to be true to allow the gene to be used.
+    """
+    
+    gene = models.ForeignKey(
+        'Gene',
+        related_name='dependencies',
+        blank=False,
+        null=False,
+        help_text=_('The dependent gene.'))
+    
+    dependee_gene = models.ForeignKey(
+        'Gene',
+        related_name='dependents',
+        blank=False,
+        null=False,
+        help_text='''The gene this gene is dependent upon. This gene will only
+            activate when the dependee gene has a certain value.''')
+    
+    dependee_value = models.CharField(
+        max_length=1000,
+        blank=False,
+        null=False,
+        help_text='''The value of the dependee gene that activates
+            this gene.''')
+    
+    positive = models.BooleanField(
+        default=True,
+        help_text=_('If false, implies the dependent gene must NOT have this value.'))
+
+    class Meta:
+        app_label = APP_LABEL
+        verbose_name = _('gene dependency')
+        verbose_name_plural = _('gene dependencies')
+        unique_together = (
+            ('gene', 'dependee_gene', 'dependee_value'),
+        )
+
 class GeneManager(models.Manager):
     
     def get_by_natural_key(self, name, *args, **kwargs):

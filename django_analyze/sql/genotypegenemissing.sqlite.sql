@@ -21,9 +21,22 @@ LEFT OUTER JOIN django_analyze_gene AS dg ON
 LEFT OUTER JOIN django_analyze_genotypegene AS dgg ON
         dgg.genotype_id = gt.id
     AND dgg.gene_id = dg.id
+
+LEFT OUTER JOIN django_analyze_genedependency AS gd3 ON
+        gd3.gene_id=g.id
+LEFT OUTER JOIN django_analyze_gene AS g3 ON
+        g3.id = gd3.dependee_gene_id
+LEFT OUTER JOIN django_analyze_genotypegene AS gg3 ON
+        gg3.genotype_id = gt.id
+    AND gg3.gene_id = g3.id
+
 WHERE   gg.id IS NULL
-    AND gg.id IS NULL
     AND (
         (g.dependee_gene_id IS NULL) OR
         (g.dependee_gene_id IS NOT NULL AND dgg.value = g.dependee_value)
+    )
+    AND (
+        (gg3.id IS NULL) OR
+        (gg3.id IS NOT NULL AND gg3.value = gd3.dependee_value AND gd3.positive = true) OR
+        (gg3.id IS NOT NULL AND gg3.value != gd3.dependee_value AND gd3.positive = false)
     );
