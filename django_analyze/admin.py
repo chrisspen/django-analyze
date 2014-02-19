@@ -390,6 +390,8 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'status',
         'fitness',
         'species',
+        'generation',
+        'epoche_of_evaluation',
         'mean_evaluation_seconds',
         'mean_absolute_error',
         'fitness_evaluation_datetime_start',
@@ -502,6 +504,10 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                     'id',
                     'genome',
                     'species',
+                    
+                    'generation',
+                    'epoche_of_evaluation',
+                    
                     'fingerprint_bool',
                     'fresh',
                     'valid',
