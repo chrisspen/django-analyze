@@ -363,6 +363,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'generation',
         'epoche_of_evaluation',
         'fresh',
+        'fitness_evaluation_datetime',
         'valid',
         'fingerprint_bool',
     )

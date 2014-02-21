@@ -1775,11 +1775,6 @@ class Genotype(models.Model):
         db_index=True,
         help_text=_('If true, indicates this predictor has been evaluated.'))
     
-    fresh_datetime = models.DateTimeField(
-        blank=True,
-        null=True,
-        help_text=_('The timestamp of when this record was made fresh.'))
-    
     valid = models.BooleanField(
         default=True,
         #editable=False,
