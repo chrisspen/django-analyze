@@ -1447,7 +1447,10 @@ class Gene(BaseModel):
             restricted to. Prefix with "source:package.module.attribute" to dynamically load values
             from a module.'''))
     
-    default = models.CharField(max_length=1000, blank=True, null=True)
+    default = models.CharField(
+        max_length=1000,
+        blank=False,
+        null=True)
     
     min_value = models.CharField(
         max_length=100,
