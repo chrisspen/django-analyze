@@ -43,11 +43,22 @@ from sklearn.externals import joblib
 
 from admin_steroids.utils import get_admin_change_url
 
+def lookup_genome(id):
+    try:
+        return Genome.objects.get(id=int(id))
+    except ValueError:
+        pass
+    except TypeError:
+        pass
+    except Genome.DoesNotExist:
+        pass
+
 str_to_type = {
     c.GENE_TYPE_INT:int,
     c.GENE_TYPE_FLOAT:float,
     c.GENE_TYPE_BOOL:(lambda v: True if v in (True, 'True', 1, '1') else False),
     c.GENE_TYPE_STR:(lambda v: str(v)),
+    c.GENE_TYPE_GENOME:lookup_genome,
 }
 
 _global_fingerprint_check = [True]
@@ -902,7 +913,18 @@ class Genome(BaseModel):
         """
         import operator
         values = [gene.get_max_value_count() for gene in self.genes.all()]
-        return utils.sci_notation(reduce(operator.mul, values, 1))
+        return reduce(operator.mul, values, 1)
+    
+    def total_possible_genotypes_sci(self):
+        """
+        Calculates the maximum number of unique genotypes given the product
+        of the unique values of all genes.
+        """
+        total = self.total_possible_genotypes()
+        if total < 1000:
+            return total
+        return utils.sci_notation(total)
+    total_possible_genotypes_sci.short_description = 'total possible genotypes'
     
     def is_allowable_gene(self, priors, next_gene):
         """
@@ -1026,7 +1048,7 @@ class Genome(BaseModel):
         
         # Delete all genotype genes that are illegal.
         genotype_ids = set()
-        q = GenotypeGeneIllegal.objects.all().values_list('genotype', flat=True).distinct()
+        q = GenotypeGeneIllegal.objects.filter(genotype__genome=self).values_list('genotype', flat=True).distinct()
         total = q.count()
         if total:
             print 'Deleting illegal genes from %i genotypes.' % (total,)
@@ -1037,6 +1059,8 @@ class Genome(BaseModel):
                     gt = Genotype.objects.get(id=gt)
                 gt.delete_illegal_genes(save=save)
                 genotype_ids.add(gt.id)
+        # Note, by this point, some genotypes may have had enough genes removed
+        # to make them identical to another genotype, causing a conflict.
         Genotype.mark_stale(genotype_ids, save=save)
     
     def populate(self):
@@ -1173,7 +1197,7 @@ class Genome(BaseModel):
         and creates them.
         """
         genotype_ids = set()
-        q = GenotypeGeneMissing.objects.all()
+        q = GenotypeGeneMissing.objects.filter(genotype__genome=self)
         if genotype:
             q = q.filter(genotype=genotype)
         total = q.count()
@@ -1200,6 +1224,7 @@ class Genome(BaseModel):
         evaluate=True,
         force_reset=False,
         continuous=False,
+        cleanup=True,
         processes=0):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
@@ -1225,8 +1250,9 @@ class Genome(BaseModel):
                 #TODO:Mark old evaluated genotypes as stale after N days to force re-evaluation.
                 
                 # Delete genotypes that are incomplete or duplicates.
-                print 'Deleting corrupt genotypes...'
-                self.delete_corrupt()
+                if cleanup:
+                    print 'Deleting corrupt genotypes...'
+                    self.delete_corrupt()
             
                 # Creates the initial genotypes.
                 # Note, must come before add_missing_genes in case hybridization
@@ -1236,8 +1262,9 @@ class Genome(BaseModel):
                     self.populate()
                 
                 # Add missing genes to genotypes.
-                print 'Adding missing genes...'
-                self.add_missing_genes()
+                if cleanup:
+                    print 'Adding missing genes...'
+                    self.add_missing_genes()
                 
                 # Evaluate un-evaluated genotypes.
                 #max_fitness = self.max_fitness
@@ -1285,6 +1312,8 @@ class Genome(BaseModel):
         finally:
             settings.DEBUG = tmp_debug
             #django.db.transaction.commit()
+            connection.close()
+        print 'Done.'
             
     def evaluate(self, genotype_id=None, force_reset=False, lock=None, fout=None):
         """
@@ -1319,7 +1348,7 @@ class Genome(BaseModel):
                     gt.fitness_evaluation_datetime_start = timezone.now()
                     gt.save()
                 else:
-                    # Nothing left to evaluate.
+                    print 'Nothing left to evaluate.'
                     return
             finally:
                 if lock:
@@ -1350,6 +1379,9 @@ class Genome(BaseModel):
                     valid=False,
                     error=error,
                 )
+                
+            if genotype_id:
+                return
 
 class GeneDependency(BaseModel):
     """
@@ -1574,25 +1606,20 @@ class Gene(BaseModel):
         return 1e999999999999999
     
     def is_discrete(self):
+        """
+        Returns true if the gene has a finite number of values
+        within non-infinite bounds.
+        """
         if self.type == c.GENE_TYPE_FLOAT and self.values:
             return True
-        discrete_types = (c.GENE_TYPE_INT, c.GENE_TYPE_BOOL, c.GENE_TYPE_STR)
+        discrete_types = (c.GENE_TYPE_INT, c.GENE_TYPE_BOOL, c.GENE_TYPE_STR, c.GENE_TYPE_GENOME)
         return self.type in discrete_types
     
     def is_continuous(self):
+        """
+        Returns true if not discrete.
+        """
         return not self.is_discrete()
-    
-    def is_checkable(self):
-        if self.type == c.GENE_TYPE_BOOL:
-            return True
-        elif self.type == c.GENE_TYPE_INT \
-        and (self.values or (self.min_value and self.max_value)):
-            return True
-        elif self.type == c.GENE_TYPE_FLOAT and self.values:
-            return True
-        elif self.type == c.GENE_TYPE_STR and self.values:
-            return True
-        return False
     
     def get_random_value(self):
         values_list = self.get_values_list()
@@ -1616,7 +1643,10 @@ class Gene(BaseModel):
             return random.choice([True,False])
         elif self.type == c.GENE_TYPE_STR:
             raise NotImplementedError, \
-                'Cannot generate a random value for a string with no values.'
+                'Cannot generate a random value for a string type with no values.'
+        elif self.type == c.GENE_TYPE_GENOME:
+            raise NotImplementedError, \
+                'Cannot generate a random value for a genome type with no values.'
         else:
             raise NotImplementedError, 'Unknown type: %s' % (self.type,)
     
@@ -1906,7 +1936,13 @@ class Genotype(models.Model):
             genotype.fresh = False
             genotype.fingerprint_fresh = False
             if save:
-                genotype.save(check_fingerprint=True)
+                try:
+                    genotype.save(check_fingerprint=True)
+                except ValueError, e:
+                    # If we're can't recalculate a unique fingerprint, then
+                    # we're a duplicate, so delete.
+                    print 'Deleting genotype %i because it conflicts.' % (genotype.id,)
+                    genotype.delete()
     
     def delete_illegal_genes(self, save=True):
         """
@@ -2153,6 +2189,12 @@ class GenotypeGene(BaseModel):
         blank=False,
         null=False)
     
+    _value_genome = models.ForeignKey(
+        Genome,
+        editable=False,
+        blank=True,
+        null=True)
+    
     class Meta:
         app_label = APP_LABEL
         ordering = (
@@ -2175,6 +2217,10 @@ class GenotypeGene(BaseModel):
     
     @property
     def value(self):
+        """
+        Converts the internally-stored string value into the true
+        logically value based on the gene's type.
+        """
         if self.gene.type == c.GENE_TYPE_INT:
             return int(self._value)
         elif self.gene.type == c.GENE_TYPE_FLOAT:
@@ -2185,13 +2231,20 @@ class GenotypeGene(BaseModel):
             return False
         elif self.gene.type == c.GENE_TYPE_STR:
             return self._value
+        elif self.gene.type == c.GENE_TYPE_GENOME:
+            return Genome.objects.get(id=int(self._value))
         return self._value
     
     @value.setter
     def value(self, v):
-        if not isinstance(v, c.GENE_TYPES):
+        if not isinstance(v, c.GENE_TYPES) or not isinstance(v, Genome):
             raise NotImplementedError, 'Unsupported type: %s' % type(v)
-        self._value = str(v)
+        elif self.gene.type == c.GENE_TYPE_GENOME:
+            self._value = str(v.id)
+            self._value_genome = v
+        else:
+            self._value = str(v)
+            self._value_genome = None
     
     def is_legal(self):
         """
@@ -2221,10 +2274,12 @@ class GenotypeGene(BaseModel):
         Override this to implement your own model validation
         for both inside and outside of admin. 
         """
+        #print 'do_validation_check():',do_validation_check()
         if do_validation_check():
             try:
                 #print 'self._value:',self._value
                 value = str_to_type[self.gene.type](self._value)
+                #print 'value:',value
                 if self.gene.values:
                     values = self.gene.get_values_list()
                     if value not in values:

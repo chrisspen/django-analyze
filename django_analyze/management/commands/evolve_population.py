@@ -20,6 +20,7 @@ class Command(BaseCommand):
         make_option('--populate', action='store_true', default=False),
         make_option('--evaluate', action='store_true', default=False),
         make_option('--force-reset', action='store_true', default=False),
+        make_option('--no-cleanup', action='store_true', default=False),
         make_option('--continuous', action='store_true', default=False),
         make_option('--processes', default=0, help='The number of processes to use for evaluating.'),
     )
@@ -58,6 +59,7 @@ class Command(BaseCommand):
             populate=populate,
             evaluate=evaluate,
             force_reset=force_reset,
+            cleanup=not kwargs['no_cleanup'],
             continuous=kwargs['continuous'],
             processes=int(kwargs['processes']),
         )

@@ -2,10 +2,11 @@ from django.http import HttpResponse, HttpResponseRedirect
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 
+import constants as c
 import models
 
 import admin_steroids
-from admin_steroids.utils import view_related_link, classproperty
+from admin_steroids.utils import view_related_link, view_link, classproperty
 from admin_steroids.filters import NullListFilter
 
 class BaseModelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
@@ -15,7 +16,7 @@ class PredictorAdmin(BaseModelAdmin):
     
     list_display = [
         'id',
-        'algorithm',
+        #'algorithm',
         'trained_datetime',
         'testing_mean_absolute_error_str',
         'training_seconds',
@@ -168,6 +169,10 @@ class GenomeAdmin(BaseModelAdmin):
         'name',
     )
     
+    raw_id_fields = (
+        'production_genotype',
+    )
+    
     readonly_fields = (
         'genes_link',
         'species_link',
@@ -175,7 +180,7 @@ class GenomeAdmin(BaseModelAdmin):
         'min_fitness',
         #'epoches_since_improvement',
         'improving',
-        'total_possible_genotypes',
+        'total_possible_genotypes_sci',
         'genotypes_link',
     )
     
@@ -188,7 +193,7 @@ class GenomeAdmin(BaseModelAdmin):
             'fields': (
                 'name',
                 'evaluator',
-                'total_possible_genotypes',
+                'total_possible_genotypes_sci',
             )
         }),
         ('Related models', {
@@ -291,6 +296,7 @@ class GenotypeGeneAdmin(BaseModelAdmin):
         'gene',
         'genotype',
         '_value',
+        'reference_link',
     )
     
     raw_id_fields = (
@@ -306,6 +312,22 @@ class GenotypeGeneAdmin(BaseModelAdmin):
         'gene__name',
         '_value',
     )
+    
+    readonly_fields = (
+        'reference_link',
+    )
+    
+    def reference_link(self, obj=None):
+        try:
+            if not obj:
+                return ''
+            elif obj.gene.type == c.GENE_TYPE_GENOME:
+                return view_link(obj.value)
+            else:
+                return ''
+        except Exception, e:
+            return str(e)
+    reference_link.allow_tags = True
 
 admin.site.register(models.GenotypeGene, GenotypeGeneAdmin)
 
