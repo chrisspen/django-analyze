@@ -43,6 +43,9 @@ from sklearn.externals import joblib
 
 from admin_steroids.utils import get_admin_change_url
 
+class FingerprintConflictError(ValidationError):
+    pass
+
 def lookup_genome(id):
     try:
         return Genome.objects.get(id=int(id))
@@ -1063,6 +1066,25 @@ class Genome(BaseModel):
         # to make them identical to another genotype, causing a conflict.
         Genotype.mark_stale(genotype_ids, save=save)
     
+    def freshen_fingerprints(self):
+        """
+        Attempts to calculate or re-calculate the fingerprint for all genotypes
+        that either don't have one or have one marked as stale.
+        Any genotype that is found to be in conflict will be deleted.
+        """
+        q = Genotype.objects.get_stale_fingerprints()
+        q = q.filter(genome=self)
+        total = q.count()
+        i = 0
+        for genotype in q.iterator():
+            try:
+                genotype.save(check_fingerprint=True)
+            except FingerprintConflictError, e:
+                # If we're can't recalculate a unique fingerprint, then
+                # we're a duplicate, so delete.
+                print 'Deleting genotype %i because it conflicts.' % (genotype.id,)
+                genotype.delete()
+    
     def populate(self):
         """
         Creates random genotypes until the maximum limit for un-evaluated
@@ -1217,7 +1239,7 @@ class Genome(BaseModel):
                 genotype_ids.add(missing.genotype_id)
                 missing.create()
         Genotype.mark_stale(genotype_ids, save=save)
-                
+    
     def evolve(self,
         genotype_id=None,
         populate=True,
@@ -1248,6 +1270,9 @@ class Genome(BaseModel):
                 #TODO:Delete the worst if population at max.
                 
                 #TODO:Mark old evaluated genotypes as stale after N days to force re-evaluation.
+                
+                # Ensure all genotypes have a valid fingerprint.
+                self.freshen_fingerprints()
                 
                 # Delete genotypes that are incomplete or duplicates.
                 if cleanup:
@@ -1340,6 +1365,7 @@ class Genome(BaseModel):
                 if lock:
                     lock.acquire()
                 if q.exists():
+#                    try:
                     Genotype.objects.update()
                     gt = q[0]
                     gt.reset()
@@ -1347,6 +1373,10 @@ class Genome(BaseModel):
                     gt.evaluating_pid = os.getpid()
                     gt.fitness_evaluation_datetime_start = timezone.now()
                     gt.save()
+#                    except FingerprintConflictError, e:
+#                        # In some rare cases, a genotype might be modified to
+#                        # that it conflicts without the fingerprint flag being
+#                        # marked stale. In this case, when we do to save it,
                 else:
                     print 'Nothing left to evaluate.'
                     return
@@ -1697,6 +1727,10 @@ class GenotypeManager(models.Manager):
             fresh=True,
             fitness__isnull=False,
         ).exclude(fitness=float('nan'))
+        
+    def get_stale_fingerprints(self):
+        return self.filter(
+            Q(fingerprint_fresh=False)|Q(fingerprint__isnull=True))
 
 class Genotype(models.Model):
     """
@@ -1938,7 +1972,7 @@ class Genotype(models.Model):
             if save:
                 try:
                     genotype.save(check_fingerprint=True)
-                except ValueError, e:
+                except FingerprintConflictError, e:
                     # If we're can't recalculate a unique fingerprint, then
                     # we're a duplicate, so delete.
                     print 'Deleting genotype %i because it conflicts.' % (genotype.id,)
@@ -1974,8 +2008,9 @@ class Genotype(models.Model):
                 q = self.genome.genotypes.filter(fingerprint=fingerprint).exclude(id=self.id)
                 if q.count():
                     url = get_admin_change_url(q[0])
-                    raise ValidationError(mark_safe(('Fingerprint for genotype'
-                        '%s conflicts with '
+                    #raise ValidationError(mark_safe(('Fingerprint for genotype'
+                    raise FingerprintConflictError(mark_safe((
+                        'Fingerprint for genotype %s conflicts with '
                         '<a href="%s" target="_blank">genotype %i</a>, indicating '
                         'one of these genotypes is a duplicate of the other. '
                         'Either delete one of these genotypes or change their '
