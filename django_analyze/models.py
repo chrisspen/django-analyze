@@ -1974,11 +1974,12 @@ class Genotype(models.Model):
                 q = self.genome.genotypes.filter(fingerprint=fingerprint).exclude(id=self.id)
                 if q.count():
                     url = get_admin_change_url(q[0])
-                    raise ValidationError(mark_safe(('Fingerprint conflicts with '
+                    raise ValidationError(mark_safe(('Fingerprint for genotype'
+                        '%s conflicts with '
                         '<a href="%s" target="_blank">genotype %i</a>, indicating '
                         'one of these genotypes is a duplicate of the other. '
                         'Either delete one of these genotypes or change their '
-                        'gene values so that they differ.') % (url, q[0].id,)))
+                        'gene values so that they differ.') % (self.id, url, q[0].id,)))
             
             super(Genotype, self).clean(*args, **kwargs)
         except Exception, e:
