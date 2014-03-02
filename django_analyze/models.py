@@ -1271,9 +1271,6 @@ class Genome(BaseModel):
                 
                 #TODO:Mark old evaluated genotypes as stale after N days to force re-evaluation.
                 
-                # Ensure all genotypes have a valid fingerprint.
-                self.freshen_fingerprints()
-                
                 # Delete genotypes that are incomplete or duplicates.
                 if cleanup:
                     print 'Deleting corrupt genotypes...'
@@ -1290,6 +1287,9 @@ class Genome(BaseModel):
                 if cleanup:
                     print 'Adding missing genes...'
                     self.add_missing_genes()
+                
+                # Ensure all genotypes have a valid fingerprint.
+                self.freshen_fingerprints()
                 
                 # Evaluate un-evaluated genotypes.
                 #max_fitness = self.max_fitness
