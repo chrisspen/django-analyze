@@ -985,8 +985,16 @@ class Genome(BaseModel):
         for gene in self.genes.all().order_by('-dependee_gene__id'):
             if not self.is_allowable_gene(priors=d, next_gene=gene):
                 continue
-            d[gene] = gene.get_random_value()
-            new_ggenes.append(GenotypeGene(genotype=new_genotype, gene=gene, _value=str(d[gene])))
+            d[gene] = _value = gene.get_random_value()
+            if isinstance(_value, models.Model):
+                _value = str(_value.id)
+            else:
+                _value = str(_value)
+            new_ggenes.append(GenotypeGene(
+                genotype=new_genotype,
+                gene=gene,
+                _value=_value,
+            ))
         GenotypeGene.objects.bulk_create(new_ggenes)
         return new_genotype
     
