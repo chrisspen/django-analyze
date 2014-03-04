@@ -131,6 +131,12 @@ class BaseModel(models.Model):
         Override this to implement your own model validation
         for both inside and outside of admin. 
         """
+        #print args, kwargs
+        kwargs = kwargs.copy()
+        if 'exclude' in kwargs:
+            del kwargs['exclude']
+        if 'validate_unique' in kwargs:
+            del kwargs['validate_unique']
         super(BaseModel, self).clean(*args, **kwargs)
         
     def full_clean(self, *args, **kwargs):
@@ -319,12 +325,14 @@ class Predictor(BaseModel, MaterializedView):
     training_seconds = models.PositiveIntegerField(
         blank=True,
         null=True,
+        editable=False,
         help_text='The number of CPU seconds the algorithm spent training.')
     
     training_ontime = models.BooleanField(
         default=True,
         blank=False,
         null=False,
+        editable=False,
         help_text='''If false, indicates this predicator failed to train within
             the allotted time, and so it is not suitable for use.''',
     )
@@ -334,7 +342,9 @@ class Predictor(BaseModel, MaterializedView):
         null=True,
         db_index=True,
         editable=False,
-        help_text='The r2 measure recorded during testing.')
+        help_text='''The coefficient of determination recorded during testing.
+            A value close to 1 indicates the model was able to perfectly
+            predict values.''')
     
     testing_mean_squared_error = models.FloatField(
         blank=True,
@@ -367,6 +377,7 @@ class Predictor(BaseModel, MaterializedView):
     training_classification_report = models.TextField(
         blank=True,
         null=True,
+        editable=False,
         help_text='''Arbitrary human-readable text summary of the last training session.''')
     
     trained_datetime = models.DateTimeField(
@@ -434,18 +445,43 @@ class Predictor(BaseModel, MaterializedView):
         blank=True,
         null=True,
         db_index=True,
+        editable=False,
         help_text='The future value predicted by the algorithm.')
+    
+    expected_value = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='When back-testing, this stores the true value, what we hope predicted_value will be.')
+    
+    reference_value = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The current value before the change event that caused the predicted value.')
+    
+    reference_difference = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text='The predicted future value minus a reference value.')
     
     predicted_prob = models.FloatField(
         blank=True,
         null=True,
         db_index=True,
+        editable=False,
         help_text='The future value probability by the algorithm.')
     
     predicted_score = models.FloatField(
         blank=True,
         null=True,
         db_index=True,
+        editable=False,
+#        verbose_name=_('score'),
         help_text='How well this prediction compares to others.')
     
     fresh = models.NullBooleanField(
@@ -480,10 +516,10 @@ class Predictor(BaseModel, MaterializedView):
         raise NotImplementedError
     
     def train(self):
-        todo
+        raise NotImplementedError
         
     def predict(self):
-        todo
+        raise NotImplementedError
 
 def get_class_that_defined_method(meth):
     if hasattr(meth, 'im_self'):
@@ -500,6 +536,9 @@ def get_method_name(func):
 _evaluators = {}
 _modeladmin_extenders = {}
 
+def get_evaluator_name(cls):
+    return cls.__module__ + '.' + cls.__name__
+
 def register_evaluator(cls):
     assert hasattr(cls, 'evaluate_genotype'), \
         'Class %s does not implement `evaluate_genotype`.' % (cls.__name__,)
@@ -508,8 +547,9 @@ def register_evaluator(cls):
     assert hasattr(cls, 'calculate_genotype_fitness'), \
         'Class %s does not implement `calculate_genotype_fitness`.' % (cls.__name__,)
     #name = get_method_name(cls)
-    name = cls.__module__ + "." + cls.__name__
+    name = get_evaluator_name(cls)
     _evaluators[name] = cls
+    return name
 
 def register_modeladmin_extender(func):
     name = get_method_name(func)
@@ -519,9 +559,9 @@ def get_evaluators():
     for name in sorted(_evaluators.iterkeys()):
         yield (name, name)
 
-def get_extenders():
-    for name in sorted(_modeladmin_extenders.iterkeys()):
-        yield (name, name)
+#def get_extenders():
+#    for name in sorted(_modeladmin_extenders.iterkeys()):
+#        yield (name, name)
 
 class SpeciesManager(models.Manager):
 
@@ -606,13 +646,6 @@ class Genome(BaseModel):
         blank=True,
         null=True,
         help_text=_('The backend to use when evaluating genotype fitness.'))
-    
-#    admin_extender = models.CharField(#TODO:remove?
-#        max_length=1000,
-#        choices=get_extenders(),
-#        blank=True,
-#        help_text='Method to call to selectively extend the admin interface.',
-#        null=True)
     
     maximum_population = models.PositiveIntegerField(
         default=10,
@@ -1209,10 +1242,6 @@ class Genome(BaseModel):
     def calculate_fitness_function(self):
         return _evaluators.get(self.evaluator).calculate_genotype_fitness
     
-    @property
-    def admin_extender_function(self):
-        return _modeladmin_extenders.get(self.admin_extender)
-    
     def add_missing_genes(self, genotype=None, save=True):
         """
         Find all genotype gene values that should exist but don't,
@@ -1289,7 +1318,8 @@ class Genome(BaseModel):
                     self.add_missing_genes()
                 
                 # Ensure all genotypes have a valid fingerprint.
-                self.freshen_fingerprints()
+                if cleanup:
+                    self.freshen_fingerprints()
                 
                 # Evaluate un-evaluated genotypes.
                 #max_fitness = self.max_fitness
@@ -1856,6 +1886,12 @@ class Genotype(models.Model):
         editable=False,
         help_text=_('Total number of sub-evaluations to run.'))
     
+    complete_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('Total number of sub-evaluations that have run.'))
+    
     success_parts = models.PositiveIntegerField(
         blank=True,
         null=True,
@@ -2193,10 +2229,11 @@ class GenotypeGeneMissing(BaseModel):
         db_table = 'django_analyze_genotypegenemissing'
         
     def create(self):
+        gene = Gene.objects.get(id=self.gene_id)
         GenotypeGene.objects.create(
-            genotype=self.genotype,
-            gene=self.gene,
-            _value=self.gene.get_random_value(),
+            genotype_id=self.genotype_id,
+            gene_id=self.gene_id,
+            _value=gene.get_random_value(),
         )
 
 class GenotypeGeneManager(models.Manager):
@@ -2227,6 +2264,7 @@ class GenotypeGene(BaseModel):
     
     _value_genome = models.ForeignKey(
         Genome,
+        on_delete=models.SET_NULL,
         editable=False,
         blank=True,
         null=True)

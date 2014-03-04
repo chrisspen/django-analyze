@@ -18,9 +18,15 @@ class PredictorAdmin(BaseModelAdmin):
         'id',
         #'algorithm',
         'trained_datetime',
-        'testing_mean_absolute_error_str',
+        'training_mean_absolute_error_str',
         'training_seconds',
         'training_ontime',
+        'testing_mean_absolute_error_str',
+        'predicted_value',
+        'predicted_prob',
+        'reference_difference',
+        'testing_r2',
+        'predicted_score',
         'fresh',
     ]
     list_filter = (
@@ -31,11 +37,20 @@ class PredictorAdmin(BaseModelAdmin):
     )
     
     readonly_fields = [
+        'predicted_value',
+        'expected_value',
+        'reference_value',
+        'reference_difference',
+        'predicted_prob',
+        'testing_r2',
+        'predicted_score',
+        'training_mean_absolute_error_str',
         'testing_mean_absolute_error_str',
     ]
     
     actions = (
         'refresh',
+        'clear',
     )
     
     def refresh(self, request, queryset):
@@ -43,7 +58,24 @@ class PredictorAdmin(BaseModelAdmin):
             obj.fresh = False
             obj.save()
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
-    refresh.short_description = 'Refresh selected %(verbose_name_plural)s'
+    refresh.short_description = 'Mark selected %(verbose_name_plural)s as stale'
+    
+    def clear(self, request, queryset):
+        for obj in queryset:
+            obj.training_mean_squared_error = None
+            obj.training_mean_absolute_error = None
+            obj.testing_mean_absolute_error = None
+            obj.testing_mean_squared_error = None
+            obj.predicted_score = None
+            obj.predicted_prob = None
+            obj.reference_difference = None
+            obj.reference_value = None
+            obj.expected_value = None
+            obj.predicted_value = None
+            obj.fresh = False
+            obj.save()
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    clear.short_description = 'Clear metrics on selected %(verbose_name_plural)s'
     
     def testing_mean_absolute_error_str(self, obj):
         if not obj or obj.testing_mean_absolute_error is None:
@@ -51,6 +83,13 @@ class PredictorAdmin(BaseModelAdmin):
         return '%.4f' % obj.testing_mean_absolute_error
     testing_mean_absolute_error_str.short_description = 'testing mean absolute error'
     testing_mean_absolute_error_str.admin_order_field = 'testing_mean_absolute_error'
+    
+    def training_mean_absolute_error_str(self, obj):
+        if not obj or obj.training_mean_absolute_error is None:
+            return ''
+        return '%.4f' % obj.training_mean_absolute_error
+    training_mean_absolute_error_str.short_description = 'training mean absolute error'
+    training_mean_absolute_error_str.admin_order_field = 'training_mean_absolute_error'
 
 class GeneInline(
     #admin.TabularInline
@@ -426,6 +465,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'fresh',
         'valid',
         'total_parts',
+        'complete_parts',
         'success_parts',
         'ontime_parts',
         'success_ratio',
@@ -547,6 +587,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                     'mean_absolute_error',
                     'gene_count',
                     'total_parts',
+                    'complete_parts',
                     'success_parts',
                     'ontime_parts',
                     'success_ratio',
@@ -557,7 +598,9 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
             }),
         ]
         for method in models._modeladmin_extenders.itervalues():
-            method(self, request, obj, fieldsets=fieldsets)
+            evaluator_name = models.get_evaluator_name(method.im_self)
+            if obj and obj.genome.evaluator == evaluator_name:
+                method(self, request, obj, fieldsets=fieldsets)
         return fieldsets
     
     def fresh_str(self, obj=None):

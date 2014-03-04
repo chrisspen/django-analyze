@@ -4,6 +4,7 @@ import time
 from multiprocessing import Process
 from collections import defaultdict
 import random
+import threading
 
 import psutil
 
@@ -78,6 +79,7 @@ class TimedProcess(Process):
         self.max_seconds = float(max_seconds)
         self.t1 = None
         self.t1_objective = None
+        self.timeout = None # Set upon process exit, True=process timed out, False=otherwise
         # The number of seconds the process waits between checks.
         self.check_freq = check_freq
         self.recursive = recursive
@@ -150,13 +152,26 @@ class TimedProcess(Process):
         super(TimedProcess, self).start(*args, **kwargs)
         self._p = psutil.Process(self.pid)
     
-    def start_then_kill(self, verbose=True):
+    def start_then_kill(self, verbose=True, block=True):
         """
         Starts and then kills the process if a timeout occurs.
         
         Returns true if a timeout occurred. False if otherwise.
         """
         self.start()
+        if block:
+            return self.wait_until_finished_or_stale(verbose=verbose)
+        else:
+            thread = threading.Thread(target=self.wait_until_finished_or_stale, kwargs=dict(verbose=verbose))
+            thread.daemon = True
+            thread.start()
+            return thread
+    
+    def wait_until_finished_or_stale(self, verbose=True):
+        """
+        Blocks until the unlying process exits or exceeds the predefined
+        timeout threshold and is killed.
+        """
         timeout = False
         if verbose:
             print>>self.fout
@@ -178,6 +193,7 @@ class TimedProcess(Process):
                 break
         self.t1 = time.clock()
         self.t1_objective = time.time()
+        self.timeout = timeout
         return timeout
 
 def weighted_choice(choices, get_total=None, get_weight=None):
