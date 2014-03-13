@@ -21,7 +21,7 @@ from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, DatabaseError, connection, reset_queries, transaction
-from django.db.models import Sum, Count, Max, Min, Q, F
+from django.db.models import Avg, Sum, Count, Max, Min, Q, F
 from django.db.utils import IntegrityError
 from django.utils import timezone
 from django.utils.safestring import mark_safe
@@ -30,11 +30,8 @@ from django.db.models import signals
 
 from django_materialized_views.models import MaterializedView
 
-try:
-    from admin_steroids.utils import StringWithTitle
-    APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
-except ImportError:
-    APP_LABEL = 'django_analyze'
+from admin_steroids.utils import StringWithTitle
+APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
 
 import constants as c
 import utils
@@ -647,6 +644,17 @@ class Genome(BaseModel):
         null=True,
         help_text=_('The backend to use when evaluating genotype fitness.'))
     
+    evolving = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=_('If true, indicates these genome is currently being evaluated.'))
+    
+    evolution_start_datetime = models.DateTimeField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The date and time when the most recent evolution epoche began.'))
+    
     maximum_population = models.PositiveIntegerField(
         default=10,
         verbose_name=_('maximum unevaluated population'),
@@ -685,12 +693,23 @@ class Genome(BaseModel):
         '''))
     
     epoche = models.PositiveIntegerField(
-        default=0,
+        default=1,
         blank=False,
         null=False,
         help_text=_('''The number of epoches thus far evaluated. This number
             will also be used to seed an epoche-specific random number
             generator for each genotype.'''))
+    
+    _epoche = models.ForeignKey(
+        'Epoche',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='current_genome')
+    
+    @property
+    def current_epoche(self):
+        return Epoche.objects.get_or_create(genome=self, index=self.epoche)[0]
     
     epoches_since_improvement = models.PositiveIntegerField(
         default=0,
@@ -707,6 +726,27 @@ class Genome(BaseModel):
         editable=True,
         help_text=_('''The number of epoches to process without seeing
             a maximum fitness increase before stopping.'''))
+    
+    
+    def total_genotype_count(self):
+        return self.genotypes.all().count()
+    total_genotype_count.short_description = 'total genotypes'
+    
+    def pending_genotype_count(self):
+        return self.pending_genotypes.count()
+    pending_genotype_count.short_description = 'pending genotypes'
+        
+    def evaluating_genotype_count(self):
+        return self.evaluating_genotypes.count()
+    evaluating_genotype_count.short_description = 'evaluating genotypes'
+    
+    def complete_genotype_count(self):
+        return self.complete_genotypes.count()
+    complete_genotype_count.short_description = 'complete genotypes'
+    
+    def invalid_genotype_count(self):
+        return self.invalid_genotypes.count()
+    invalid_genotype_count.short_description = 'invalid genotypes'
     
     def stalled(self):
         return self.epoches_since_improvement >= self.epoche_stall
@@ -732,6 +772,12 @@ class Genome(BaseModel):
             will be deleted. Requires maximum_population to be set to
             a non-zero value.''')
     )
+    
+    elite_ratio = models.FloatField(
+        default=0.1,
+        blank=False,
+        null=False,
+        help_text=_('''The ratio of the best genotypes to keep between epoches.'''))
     
     min_fitness = models.FloatField(
         blank=True,
@@ -804,6 +850,8 @@ class Genome(BaseModel):
     def pending_genotypes(self):
         """
         Returns genotypes that have not yet had their fitness evaluated.
+        
+        fresh__exact=0&evaluating__exact=0
         """
         return self.genotypes.filter(fresh=False, evaluating=False)
     
@@ -817,6 +865,10 @@ class Genome(BaseModel):
                 .aggregate(Max('fitness'), Min('fitness'))
             self.max_fitness = q['fitness__max']
             self.min_fitness = q['fitness__min']
+            
+            if self._epoche is None or self._epoche.index != self.epoche:
+                self._epoche = self.current_epoche
+            self._epoche.save()
         
             #TODO:how to handle species that need to be deleted?
             missing_species = max(0, self.max_species - self.species.all().count())
@@ -1277,6 +1329,51 @@ class Genome(BaseModel):
                 missing.create()
         Genotype.mark_stale(genotype_ids, save=save)
     
+    def delete_worst_genotypes(self):
+        """
+        Deletes all but the best genotypes.
+        The amount kept is controlled by the elite_ratio parameter.
+        """
+        #TODO:delete invalid genotypes as well?
+        #Note, invalid genotypes are ones that encountered ANY errors
+        #during evaluation but still had enough data to acquire a fitness.
+        q = self.genotypes.filter(fitness__isnull=False).order_by('-fitness')
+        keep_n = int(round(self.maximum_population * self.elite_ratio))
+        keep_ids = [_.id for _ in q[:keep_n]]
+        if self.production_genotype:
+            keep_ids.append(self.production_genotype.id)
+        q = self.genotypes.exclude(id__in=keep_ids).only('id')
+        total = q.count()
+        print '%i inferior genotypes to delete.' % total
+        i = 0
+        for gt in q:
+            i += 1
+            print '\rDeleting genotype %i (%i of %i %.02f%%)...' \
+                % (gt.id, i, total, i/float(total)*100),
+            sys.stdout.flush()
+            gt.delete()
+        print
+    
+    def set_production_genotype(self, save=True):
+        """
+        Assigns the most fit genotype as the recommended solution.
+        """
+        if not self.production_genotype_auto:
+            # We can't select the best unless we've been told we're allowed to.
+            return
+        if self.pending_genotypes.all().count():
+            # We can't select the best until everything's evaluated.
+            return
+        # Order highest fitness first.
+        q = self.complete_genotypes.all().order_by('-fitness')
+        if not q.count():
+            # Don't set anything if there are no valid genotypes to select.
+            return
+        self.production_genotype = q[0]
+        #TODO:notify dependent models to mark themselves as stale?
+        if save:
+            self.save()
+    
     def evolve(self,
         genotype_id=None,
         populate=True,
@@ -1284,13 +1381,13 @@ class Genome(BaseModel):
         force_reset=False,
         continuous=False,
         cleanup=True,
-        processes=0):
+        processes=1):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
         """
         from multiprocessing import Process, Queue, Lock
         
-        assert processes >= 0
+        assert processes >= 1
         
 #        assert not processes or utils.is_power_of_two(processes), \
 #            'Processes must be a power of 2.'
@@ -1298,27 +1395,38 @@ class Genome(BaseModel):
         tmp_debug = settings.DEBUG
         settings.DEBUG = False
         try:
+            Genome.objects.filter(id=self.id).update(evolving=True, evolution_start_datetime=timezone.now())
             while 1:
                 
                 # Reset stuck genotypes.
                 self.genotypes.filter(evaluating=True)\
                     .update(evaluating=False, evaluating_pid=None)
                 
-                #TODO:Delete the worst if population at max.
-                
-                #TODO:Mark old evaluated genotypes as stale after N days to force re-evaluation.
-                
                 # Delete genotypes that are incomplete or duplicates.
                 if cleanup:
                     print 'Deleting corrupt genotypes...'
                     self.delete_corrupt()
-            
-                # Creates the initial genotypes.
-                # Note, must come before add_missing_genes in case hybridization
-                # results in gene loss.
-                if populate:
-                    print 'Populating...'
-                    self.populate()
+                    
+                # Only cycle epoches if we've completely evaluated all
+                # genotypes in the previous epoche.
+                # Otherwise, continue evaluating the current epoche.
+                pending_genotypes = self.pending_genotypes
+                if cleanup and not pending_genotypes.count():
+                    
+                    # Delete the worst if population at max.
+                    self.delete_worst_genotypes()
+                    
+                    # Mark remaining genotypes as stale so they can be
+                    # re-evaluated and compared with new genotypes.
+                    #TODO:make this optional?
+                    self.genotypes.all().update(fresh=False)
+                
+                    # Creates the initial genotypes for the new epoche.
+                    # Note, must come before add_missing_genes in case hybridization
+                    # results in gene loss.
+                    if populate:
+                        print 'Populating...'
+                        self.populate()
                 
                 # Add missing genes to genotypes.
                 if cleanup:
@@ -1337,30 +1445,29 @@ class Genome(BaseModel):
                         return
                     else:
                         
+                        # Start processes.
                         process_stack = []
                         lock = Lock()
-                        if processes:
-                            # Start processes.
-                            for _ in xrange(processes):
-                                django.db.connection.close()
-                                p = Process(target=self.evaluate, kwargs=dict(lock=lock))
-                                #p.daemon = True#breaks evaluate() launching processes of its own
-                                p.start()
-                                process_stack.append(p)
-                            # Wait for processes to end.
-                            while any(p for p in process_stack if p.is_alive()):
-                                time.sleep(0.1)
-                        else:
-                            self.evaluate(genotype_id=genotype_id, force_reset=force_reset)
+                        for _ in xrange(processes):
+                            django.db.connection.close()
+                            p = Process(target=self.evaluate, kwargs=dict(lock=lock))
+                            #p.daemon = True#breaks evaluate() launching processes of its own
+                            p.start()
+                            process_stack.append(p)
+                        # Wait for processes to end.
+                        while any(p for p in process_stack if p.is_alive()):
+                            time.sleep(0.1)
                         
+                        # Reload the current genome in case we've received updates.
                         Genome.objects.update()
-                        genome = Genome.objects.get(id=self.id)
+                        genome = self = Genome.objects.get(id=self.id)
                         genome.epoche += 1
                         genome.epoches_since_improvement += 1
                         #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
+                        genome.set_production_genotype(save=False)
                         genome.save()
-                        self.epoche = genome.epoche
-                        self.epoches_since_improvement = genome.epoches_since_improvement
+#                        self.epoche = genome.epoche
+#                        self.epoches_since_improvement = genome.epoches_since_improvement
                 else:
                     return
                 
@@ -1373,6 +1480,7 @@ class Genome(BaseModel):
                 reset_queries()
         
         finally:
+            Genome.objects.filter(id=self.id).update(evolving=False)
             settings.DEBUG = tmp_debug
             #django.db.transaction.commit()
             connection.close()
@@ -1432,6 +1540,7 @@ class Genome(BaseModel):
                 gt.evaluating_pid = None
                 gt.valid = not gt.error
                 gt.epoche_of_evaluation = self.epoche
+                gt.epoche = gt.genome.current_epoche
                 gt.save()
                 reset_queries()
             except Exception, e:
@@ -1450,6 +1559,57 @@ class Genome(BaseModel):
                 
             if genotype_id:
                 return
+
+class Epoche(BaseModel):
+    
+    genome = models.ForeignKey(Genome, related_name='epoches')
+    
+    index = models.PositiveIntegerField(
+        default=1,
+        editable=False,
+        db_index=True)
+    
+    min_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        help_text=_('The smallest observed fitness.'))
+    
+    mean_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        help_text=_('The mean observed fitness.'))
+    
+    max_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        help_text=_('The largest observed fitness.'))
+    
+    def __unicode__(self):
+        return unicode(self.index)
+    
+    class Meta:
+        app_label = APP_LABEL
+        unique_together = (
+            ('genome', 'index'),
+        )
+        ordering = ('genome', '-index')
+        
+    def save(self, force_recalc=False, *args, **kwargs):
+        if self.id and (force_recalc or self.genome.epoche == self.index):
+            
+            q = self.genotypes.filter(fitness__isnull=False).exclude(fitness=float('nan'))\
+                .aggregate(Max('fitness'), Min('fitness'), Avg('fitness'))
+            self.max_fitness = q['fitness__max']
+            self.mean_fitness = q['fitness__avg']
+            self.min_fitness = q['fitness__min']
+            
+        super(Epoche, self).save(*args, **kwargs)
 
 class GeneDependency(BaseModel):
     """
@@ -1854,12 +2014,21 @@ class Genotype(models.Model):
 #        help_text=_('''If checked, this genotype will not be deleted
 #            even if it becomes unfit.'''))
     
+    #DEPRECATED, use epoche instead
     epoche_of_evaluation = models.PositiveIntegerField(
         verbose_name=' EOF',
         blank=True,
         null=True,
         editable=False,
         db_index=True,
+        help_text=_('The epoche when this genotype was last evaluated.'))
+    
+    epoche = models.ForeignKey(
+        'Epoche',
+        related_name='genotypes',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
         help_text=_('The epoche when this genotype was last evaluated.'))
     
     evaluating = models.BooleanField(
@@ -2001,7 +2170,7 @@ class Genotype(models.Model):
                 gt.save(check_fingerprint=True)
     
     @classmethod
-    def mark_stale(cls, genotype_ids, save=True):
+    def mark_stale(cls, genotype_ids, save=True, check_fingerprint=True):
         """
         Updates the given genotypes as needing the fitness and fingerprint
         re-evaluated.
@@ -2012,10 +2181,11 @@ class Genotype(models.Model):
         for genotype in q.iterator():
             #TODO:wrap in error handling for fingerprint conflict?
             genotype.fresh = False
-            genotype.fingerprint_fresh = False
+            if check_fingerprint:
+                genotype.fingerprint_fresh = False
             if save:
                 try:
-                    genotype.save(check_fingerprint=True)
+                    genotype.save(check_fingerprint=check_fingerprint)
                 except FingerprintConflictError, e:
                     # If we're can't recalculate a unique fingerprint, then
                     # we're a duplicate, so delete.
@@ -2101,6 +2271,9 @@ class Genotype(models.Model):
         self.total_evaluation_seconds = 0
         if self.fitness_evaluation_datetime and self.fitness_evaluation_datetime_start:
             self.total_evaluation_seconds = (self.fitness_evaluation_datetime - self.fitness_evaluation_datetime_start).seconds
+        
+        if self.epoche is None or self.epoche_of_evaluation != self.epoche.index:
+            self.epoche = Epoche.objects.get_or_create(genome=self.genome, index=self.epoche_of_evaluation)[0]
         
         super(Genotype, self).save(using=using, *args, **kwargs)
     

@@ -200,8 +200,23 @@ class GenomeAdmin(BaseModelAdmin):
         'name',
         'epoche',
         'epoches_since_improvement',
+        
+        'total_genotype_count',
+        'pending_genotype_count',
+        'evaluating_genotype_count',
+        'complete_genotype_count',
+        'invalid_genotype_count',
+        
         'min_fitness',
         'max_fitness',
+        'improving',
+        'evolving',
+        'evolution_start_datetime',
+    )
+    
+    list_filter = (
+        'evolving',
+        #'improving',
     )
     
     search_fields = (
@@ -215,12 +230,21 @@ class GenomeAdmin(BaseModelAdmin):
     readonly_fields = (
         'genes_link',
         'species_link',
+        'epoches_link',
         'max_fitness',
         'min_fitness',
         #'epoches_since_improvement',
         'improving',
         'total_possible_genotypes_sci',
         'genotypes_link',
+        'evolution_start_datetime',
+        
+        'total_genotype_count',
+        'pending_genotype_count',
+        'evaluating_genotype_count',
+        'complete_genotype_count',
+        'invalid_genotype_count',
+        
     )
     
     actions = (
@@ -232,6 +256,8 @@ class GenomeAdmin(BaseModelAdmin):
             'fields': (
                 'name',
                 'evaluator',
+                'evolving',
+                'evolution_start_datetime',
                 'total_possible_genotypes_sci',
             )
         }),
@@ -240,6 +266,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'genes_link',
                 'species_link',
                 'genotypes_link',
+                'epoches_link',
             )
         }),
         ('Progress', {
@@ -262,6 +289,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'epoche_stall',
                 'max_species',
                 'delete_inferiors',
+                'elite_ratio',
                 'production_genotype_auto',
                 'production_genotype',
             )
@@ -283,6 +311,13 @@ class GenomeAdmin(BaseModelAdmin):
         return view_related_link(obj, 'species')
     species_link.allow_tags = True
     species_link.short_description = 'species'
+    
+    def epoches_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'epoches')
+    epoches_link.allow_tags = True
+    epoches_link.short_description = 'epoches'
     
     def genotypes_link(self, obj=None):
         try:
@@ -326,6 +361,12 @@ class GenomeAdmin(BaseModelAdmin):
             return str(e)
     genes_link.allow_tags = True
     genes_link.short_description = 'genes'
+    
+    def get_readonly_fields(self, request, obj=None, check_fieldsets=True):
+        readonly_fields = list(self.readonly_fields)
+        if obj and obj.evolving:
+            readonly_fields.extend([f.name for f in self.model._meta.fields if f.name not in ('evolving',)])
+        return readonly_fields
 
 admin.site.register(models.Genome, GenomeAdmin)
 
@@ -630,6 +671,22 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     genes_link.allow_tags = True
 
 admin.site.register(models.Genotype, GenotypeAdmin)
+
+class EpocheAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.ReadonlyModelAdmin):
+    
+    list_display = (
+        'index',
+        'genome',
+        'min_fitness',
+        'mean_fitness',
+        'max_fitness',
+    )
+    
+    raw_id_fields = (
+        'genome',
+    )
+    
+admin.site.register(models.Epoche, EpocheAdmin)
 
 class LabelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 
