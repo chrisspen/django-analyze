@@ -793,6 +793,7 @@ class Genome(BaseModel):
     
     production_genotype_auto = models.BooleanField(
         default=False,
+        verbose_name=_('Automatically select production genotype'),
         help_text=_('''If checked, the `production_genotype` will automatically
             be set to the genotype with the best fitness.'''))
     
@@ -802,6 +803,12 @@ class Genome(BaseModel):
         on_delete=models.SET_NULL,
         blank=True,
         null=True)
+    
+    production_at_best = models.BooleanField(
+        default=False,
+        db_index=True,
+        editable=False,
+        help_text=_('If true, indicates the production genotype is the most fit of all known genotypes.'))
     
     evaluating_part = models.PositiveIntegerField(
         default=0,
@@ -855,6 +862,16 @@ class Genome(BaseModel):
         """
         return self.genotypes.filter(fresh=False, evaluating=False)
     
+    @property
+    def best_genotype(self):
+        """
+        Returns the completely evaluated valid genotype with the highest
+        fitness.
+        """
+        q = self.complete_genotypes.order_by('-fitness')
+        if q.count():
+            return q[0]
+    
     def save(self, *args, **kwargs):
         
         if self.id:
@@ -869,6 +886,9 @@ class Genome(BaseModel):
             if self._epoche is None or self._epoche.index != self.epoche:
                 self._epoche = self.current_epoche
             self._epoche.save()
+            
+            best_genotype = self.best_genotype
+            self.production_at_best = self.production_genotype == best_genotype
         
             #TODO:how to handle species that need to be deleted?
             missing_species = max(0, self.max_species - self.species.all().count())
@@ -1130,6 +1150,30 @@ class Genome(BaseModel):
     def valid_genotypes(self):
         return Genotype.objects.valid().filter(genome=self)
     
+    def is_production_ready(self):
+        if not self.production_genotype:
+            return False
+        for dependent_genome in self.get_dependent_genomes():
+            if not dependent_genome.is_production_ready():
+                return False
+        return self.is_production_ready_function(genotype=self.production_genotype)
+    
+    def get_dependent_genomes(self):
+        """
+        Returns a list of genomes this genome depends on for current
+        production use.
+        """
+        if not self.production_genotype:
+            return []
+        a = set()
+        genes = self.production_genotype.genes
+        q = genes.filter(gene__type=c.GENE_TYPE_GENOME)
+        for ggene in q.iterator():
+            genome = ggene.value
+            if genome:
+                a.add(genome)
+        return a
+    
     def delete_corrupt(self, save=True):
         """
         Deletes genotypes without a fingerprint, which should only happen
@@ -1297,6 +1341,10 @@ class Genome(BaseModel):
     @property
     def reset_function(self):
         return _evaluators.get(self.evaluator).reset_genotype
+    
+    @property
+    def is_production_ready_function(self):
+        return _evaluators.get(self.evaluator).is_production_ready_genotype
     
     @property
     def calculate_fitness_function(self):
@@ -1559,6 +1607,19 @@ class Genome(BaseModel):
                 
             if genotype_id:
                 return
+            
+    def production_evaluate(self):
+        """
+        Prepares the production genotype for production use.
+        """
+        prod_ready = self.is_production_ready()
+        dep_genomes = list(self.get_dependent_genomes()) or None
+        print '\tproduction ready:',prod_ready
+        print '\tdependent genomes:',dep_genomes
+        if prod_ready:
+            # Don't evaluate if there's nothing to do.
+            return
+        self.evaluator_function(self.production_genotype, test=False)
 
 class Epoche(BaseModel):
     

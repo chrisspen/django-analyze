@@ -209,6 +209,7 @@ class GenomeAdmin(BaseModelAdmin):
         
         'min_fitness',
         'max_fitness',
+        'production_at_best',
         'improving',
         'evolving',
         'evolution_start_datetime',
@@ -216,6 +217,7 @@ class GenomeAdmin(BaseModelAdmin):
     
     list_filter = (
         'evolving',
+        'production_at_best',
         #'improving',
     )
     
@@ -238,6 +240,7 @@ class GenomeAdmin(BaseModelAdmin):
         'total_possible_genotypes_sci',
         'genotypes_link',
         'evolution_start_datetime',
+        'production_at_best',
         
         'total_genotype_count',
         'pending_genotype_count',
@@ -280,6 +283,13 @@ class GenomeAdmin(BaseModelAdmin):
                 'ratio_evaluated',
             )
         }),
+        ('Production', {
+            'fields': (
+                'production_genotype_auto',
+                'production_genotype',
+                'production_at_best',
+            )
+        }),
         ('Options', {
             'fields': (
                 'maximum_population',
@@ -290,8 +300,6 @@ class GenomeAdmin(BaseModelAdmin):
                 'max_species',
                 'delete_inferiors',
                 'elite_ratio',
-                'production_genotype_auto',
-                'production_genotype',
             )
         }),
     )

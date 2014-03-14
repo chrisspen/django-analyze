@@ -162,7 +162,9 @@ class TimedProcess(Process):
         if block:
             return self.wait_until_finished_or_stale(verbose=verbose)
         else:
-            thread = threading.Thread(target=self.wait_until_finished_or_stale, kwargs=dict(verbose=verbose))
+            thread = threading.Thread(
+                target=self.wait_until_finished_or_stale,
+                kwargs=dict(verbose=verbose))
             thread.daemon = True
             thread.start()
             return thread
