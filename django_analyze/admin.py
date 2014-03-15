@@ -528,6 +528,21 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 #        'fresh_str',
         'fingerprint_fresh',
         'genes_link',
+
+        'complete_ratio',
+        'complete_percent',
+        'production_complete_ratio',
+        'production_complete_percent',
+                    
+        'production_fresh',
+        'production_valid',
+        'production_error',
+        'production_total_parts',
+        'production_complete_parts',
+        'production_success_parts',
+        'production_ontime_parts',
+        'production_success_ratio',
+        'production_ontime_ratio',
     ]
     
 #    exclude = (
@@ -619,36 +634,58 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
             (None, {
                 'fields': [
                     'id',
-                    'immortal',
                     'genome',
-                    'species',
-                    
+                    'immortal',
+                    'genes_link',
+                ]
+            }),
+            ('Details', {
+                'classes': ('collapse',),
+                'fields': [
                     'generation',
-                    'epoche_of_evaluation',
-                    
-                    'fingerprint_bool',
-                    'fresh',
-                    'valid',
-                    'error',
-#                    'fresh_str',
                     'fingerprint_fresh',
+                    'fingerprint',
+                    #'fingerprint_bool',
+                    'epoche_of_evaluation',
+                    'species',
+                ]
+            }),
+            ('Test status', {
+                'fields': [
+                    #'complete_ratio',
+                    'complete_percent',
+                           
                     'fitness',
-                    
                     'fitness_evaluation_datetime_start',
                     'fitness_evaluation_datetime',
-                    
                     'mean_evaluation_seconds',
                     'total_evaluation_seconds',
                     'mean_absolute_error',
-                    'gene_count',
+                    
+                    'fresh',
+                    'valid',
+                    'error',
                     'total_parts',
                     'complete_parts',
                     'success_parts',
                     'ontime_parts',
                     'success_ratio',
                     'ontime_ratio',
-                    'fingerprint',
-                    'genes_link',
+                ]
+            }),
+            ('Production status', {
+                'fields': [
+                    'production_complete_percent',
+                    
+                    'production_fresh',
+                    'production_valid',
+                    'production_error',
+                    'production_total_parts',
+                    'production_complete_parts',
+                    'production_success_parts',
+                    'production_ontime_parts',
+                    'production_success_ratio',
+                    'production_ontime_ratio',
                 ]
             }),
         ]

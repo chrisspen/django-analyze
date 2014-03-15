@@ -2139,12 +2139,6 @@ class Genotype(models.Model):
         db_index=True,
         help_text=_('If true, indicates this predictor has been evaluated.'))
     
-    immortal = models.BooleanField(
-        default=False,
-        editable=True,
-        db_index=True,
-        help_text=_('If true, this genotype will not be automatically deleted if it is found to be inferior.'))
-    
     valid = models.BooleanField(
         default=True,
         #editable=False,
@@ -2152,6 +2146,12 @@ class Genotype(models.Model):
         help_text=_('''If true, indicates this genotype was evaluted without
             any fatal errors. Note, other errors may have occurred as reported
             by the success ratio.'''))
+    
+    immortal = models.BooleanField(
+        default=False,
+        editable=True,
+        db_index=True,
+        help_text=_('If true, this genotype will not be automatically deleted if it is found to be inferior.'))
     
     total_parts = models.PositiveIntegerField(
         blank=True,
@@ -2193,7 +2193,118 @@ class Genotype(models.Model):
         help_text=_('''If implemented by the backend, represents the fraction
             of cases this genotype is able to evaluate within the timeout.'''))
     
+    complete_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text=_('The ratio of parts evaluated for production use.'))
+    
+    def complete_percent(self):
+        if self.complete_ratio is None:
+            return '(None)'
+        return '%.02f%%' % (self.complete_ratio*100,)
+    complete_percent.admin_order_field = 'complete_ratio'
+    
     error = models.TextField(
+        blank=True,
+        null=True,
+        help_text=_('Any error message received during evaluation.'))
+    
+    ## Production status fields.
+    
+    production_evaluating = models.BooleanField(
+        default=False,
+        db_index=True,
+        verbose_name='evaluating',
+        help_text=_('''If checked, indicates this genotype is currently having
+            its fitness evaluated for production use.'''))
+    
+    production_evaluating_pid = models.IntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name='evaluating pid',
+        help_text=_('The PID of the process evaluating this genotype for production use.'))
+    
+    production_fresh = models.BooleanField(
+        default=False,
+        editable=False,
+        db_index=True,
+        verbose_name='fresh',
+        help_text=_('If true, indicates this predictor has been evaluated for production use.'))
+    
+    production_valid = models.BooleanField(
+        default=True,
+        #editable=False,
+        db_index=True,
+        verbose_name='valid',
+        help_text=_('''If true, indicates this genotype was evaluted without
+            any fatal errors. Note, other errors may have occurred as reported
+            by the success ratio.'''))
+    
+    production_total_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name='total parts',
+        help_text=_('Total number of sub-evaluations to run.'))
+    
+    production_complete_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name='complete parts',
+        help_text=_('Total number of sub-evaluations that have run.'))
+    
+    production_success_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name='success parts',
+        help_text=_('Total number of sub-evaluations successfully run.'))
+    
+    production_ontime_parts = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name='ontime parts',
+        help_text=_('Total number of sub-evaluations that ran ontime.'))
+    
+    production_success_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        verbose_name='success ratio',
+        help_text=_('''If implemented by the backend, represents the fraction
+            of cases this genotype successfully addresses.'''))
+    
+    production_ontime_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        verbose_name='ontime ratio',
+        help_text=_('''If implemented by the backend, represents the fraction
+            of cases this genotype is able to evaluate within the timeout.'''))
+    
+    production_complete_ratio = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        verbose_name='complete ratio',
+        help_text=_('The ratio of parts evaluated for production use.'))
+    
+    def production_complete_percent(self):
+        if self.production_complete_ratio is None:
+            return '(None)'
+        return '%.02f%%' % (self.production_complete_ratio*100,)
+    production_complete_percent.admin_order_field = 'production_complete_ratio'
+    production_complete_percent.short_description = 'complete percent'
+    
+    production_error = models.TextField(
         blank=True,
         null=True,
         help_text=_('Any error message received during evaluation.'))
@@ -2326,6 +2437,10 @@ class Genotype(models.Model):
                         'Either delete one of these genotypes or change their '
                         'gene values so that they differ.') % (self.id, url, q[0].id,)))
             
+            if 'exclude' in kwargs:
+                del kwargs['exclude']
+            if 'validate_unique' in kwargs:
+                del kwargs['validate_unique']
             super(Genotype, self).clean(*args, **kwargs)
         except Exception, e:
 #            print '!'*80
@@ -2335,24 +2450,37 @@ class Genotype(models.Model):
     def full_clean(self, check_fingerprint=True, *args, **kwargs):
         return self.clean(check_fingerprint=check_fingerprint, *args, **kwargs)
     
-    def update_status(self, success_parts, ontime_parts, total_parts, complete_parts):
-        
-        self.total_parts = total_parts
-        self.success_parts = success_parts
-        self.ontime_parts = ontime_parts
-        self.complete_parts = complete_parts
-        
-        self.success_ratio = success_parts/float(total_parts) if total_parts else None
-        self.ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
-        
-        type(self).objects.filter(id=self.id).update(
-            total_parts=self.total_parts,
-            complete_parts=self.complete_parts,
-            success_parts=self.success_parts,
-            ontime_parts=self.ontime_parts,
-            success_ratio=self.success_ratio,
-            ontime_ratio=self.ontime_ratio,
-        )
+    def update_status(self, success_parts, ontime_parts, total_parts, complete_parts, production=False):
+        if production:
+            self.production_total_parts = total_parts
+            self.production_success_parts = success_parts
+            self.production_ontime_parts = ontime_parts
+            self.production_complete_parts = complete_parts
+            self.production_success_ratio = production_success_parts/float(production_total_parts) if production_total_parts else None
+            self.production_ontime_ratio = production_ontime_parts/float(production_total_parts) if production_total_parts else None
+            type(self).objects.filter(id=self.id).update(
+                production_total_parts=self.production_total_parts,
+                production_complete_parts=self.production_complete_parts,
+                production_success_parts=self.production_success_parts,
+                production_ontime_parts=self.production_ontime_parts,
+                production_success_ratio=self.production_success_ratio,
+                production_ontime_ratio=self.production_ontime_ratio,
+            )
+        else:
+            self.total_parts = total_parts
+            self.success_parts = success_parts
+            self.ontime_parts = ontime_parts
+            self.complete_parts = complete_parts
+            self.success_ratio = success_parts/float(total_parts) if total_parts else None
+            self.ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
+            type(self).objects.filter(id=self.id).update(
+                total_parts=self.total_parts,
+                complete_parts=self.complete_parts,
+                success_parts=self.success_parts,
+                ontime_parts=self.ontime_parts,
+                success_ratio=self.success_ratio,
+                ontime_ratio=self.ontime_ratio,
+            )
     
     def save(self, check_fingerprint=True, using=None, *args, **kwargs):
         
@@ -2373,6 +2501,14 @@ class Genotype(models.Model):
         if self.epoche is None or self.epoche_of_evaluation != self.epoche.index:
             self.epoche = Epoche.objects.get_or_create(genome=self.genome, index=self.epoche_of_evaluation or self.genome.epoche)[0]
         
+        self.complete_ratio = None
+        if self.total_parts is not None and self.complete_parts is not None:
+            self.complete_ratio = self.complete_parts/float(self.total_parts)
+        
+        self.production_complete_ratio = None
+        if self.production_total_parts is not None and self.production_complete_parts is not None:
+            self.production_complete_ratio = self.production_complete_parts/float(self.production_total_parts)
+            
         super(Genotype, self).save(using=using, *args, **kwargs)
     
     @staticmethod
