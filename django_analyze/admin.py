@@ -27,9 +27,11 @@ class PredictorAdmin(BaseModelAdmin):
         'reference_difference',
         'testing_r2',
         'predicted_score',
+        'evaluating',
         'fresh',
     ]
     list_filter = (
+        'evaluating',
         'fresh',
         'training_ontime',
         ('training_seconds', NullListFilter),

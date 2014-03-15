@@ -481,6 +481,11 @@ class Predictor(BaseModel, MaterializedView):
 #        verbose_name=_('score'),
         help_text='How well this prediction compares to others.')
     
+    evaluating = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=_('''If checked, indicates this predictor is currently being trained or tested.'''))
+    
     fresh = models.NullBooleanField(
         editable=False,
         db_index=True,
@@ -1611,15 +1616,28 @@ class Genome(BaseModel):
     def production_evaluate(self):
         """
         Prepares the production genotype for production use.
+        Does nothing if any dependent genomes are not ready.
         """
         prod_ready = self.is_production_ready()
         dep_genomes = list(self.get_dependent_genomes()) or None
         print '\tproduction ready:',prod_ready
         print '\tdependent genomes:',dep_genomes
-        if prod_ready:
+        if self.evolving:
+            #TODO:allow if the production genotype has already been evaluated?
+            print>>sys.stderr, 'Genome %i is currently evolving. Halt evolution before evaluating for production use.' % self.id
+            return False
+        elif prod_ready:
             # Don't evaluate if there's nothing to do.
-            return
+            return True
+        elif dep_genomes:
+            for dep_genome in dep_genomes:
+                if not dep_genome.is_production_ready():
+                    # Don't evaluate if we're dependent on another genome
+                    # that's not production ready.
+                    print>>sys.stderr, 'Genome %i depends on genome %i which is not ready.' % (self.id, dep_genome.id)
+                    return False
         self.evaluator_function(self.production_genotype, test=False)
+        return self.is_production_ready()
 
 class Epoche(BaseModel):
     
@@ -2300,17 +2318,19 @@ class Genotype(models.Model):
     def full_clean(self, check_fingerprint=True, *args, **kwargs):
         return self.clean(check_fingerprint=check_fingerprint, *args, **kwargs)
     
-    def update_status(self, success_parts, ontime_parts, total_parts):
+    def update_status(self, success_parts, ontime_parts, total_parts, complete_parts):
         
         self.total_parts = total_parts
         self.success_parts = success_parts
         self.ontime_parts = ontime_parts
+        self.complete_parts = complete_parts
         
         self.success_ratio = success_parts/float(total_parts) if total_parts else None
         self.ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
         
         type(self).objects.filter(id=self.id).update(
             total_parts=self.total_parts,
+            complete_parts=self.complete_parts,
             success_parts=self.success_parts,
             ontime_parts=self.ontime_parts,
             success_ratio=self.success_ratio,
