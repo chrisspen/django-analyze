@@ -2456,8 +2456,8 @@ class Genotype(models.Model):
             self.production_success_parts = success_parts
             self.production_ontime_parts = ontime_parts
             self.production_complete_parts = complete_parts
-            self.production_success_ratio = production_success_parts/float(production_total_parts) if production_total_parts else None
-            self.production_ontime_ratio = production_ontime_parts/float(production_total_parts) if production_total_parts else None
+            self.production_success_ratio = success_parts/float(total_parts) if total_parts else None
+            self.production_ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
             type(self).objects.filter(id=self.id).update(
                 production_total_parts=self.production_total_parts,
                 production_complete_parts=self.production_complete_parts,
