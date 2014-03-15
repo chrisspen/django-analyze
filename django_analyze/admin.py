@@ -478,12 +478,14 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'fitness_evaluation_datetime',
         'valid',
         'fingerprint_bool',
+        'immortal',
     )
     
     list_filter = (
         'fresh',
         'valid',
         'evaluating',
+        'immortal',
         ('fitness', NullListFilter),
         ('fingerprint', NullListFilter),
     )
@@ -500,6 +502,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     readonly_fields = [
         'id',
+        'genome',
         'status',
         'fitness',
         'species',
@@ -616,6 +619,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
             (None, {
                 'fields': [
                     'id',
+                    'immortal',
                     'genome',
                     'species',
                     

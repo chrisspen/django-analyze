@@ -417,7 +417,9 @@ class Predictor(BaseModel, MaterializedView):
         if v:
             _, fn = tempfile.mkstemp()
             joblib.dump(v, fn, compress=9)
-            self._predictor = b64encode(open(fn, 'rb').read())
+            fin = open(fn, 'rb')
+            self._predictor = b64encode(fin.read())
+            fin.close()
             os.remove(fn)
         else:
             self._predictor = None
@@ -1395,7 +1397,7 @@ class Genome(BaseModel):
         keep_ids = [_.id for _ in q[:keep_n]]
         if self.production_genotype:
             keep_ids.append(self.production_genotype.id)
-        q = self.genotypes.exclude(id__in=keep_ids).only('id')
+        q = self.genotypes.exclude(id__in=keep_ids).exclude(immortal=True).only('id')
         total = q.count()
         print '%i inferior genotypes to delete.' % total
         i = 0
@@ -1448,7 +1450,12 @@ class Genome(BaseModel):
         tmp_debug = settings.DEBUG
         settings.DEBUG = False
         try:
-            Genome.objects.filter(id=self.id).update(evolving=True, evolution_start_datetime=timezone.now())
+            self.evolving = True
+            self.evolution_start_datetime = timezone.now()
+            Genome.objects.filter(id=self.id).update(
+                evolving=self.evolving,
+                evolution_start_datetime=self.evolution_start_datetime,
+            )
             while 1:
                 
                 # Reset stuck genotypes.
@@ -1480,6 +1487,9 @@ class Genome(BaseModel):
                     if populate:
                         print 'Populating...'
                         self.populate()
+                        
+                else:
+                    print 'Skipping population.'
                 
                 # Add missing genes to genotypes.
                 if cleanup:
@@ -1533,7 +1543,8 @@ class Genome(BaseModel):
                 reset_queries()
         
         finally:
-            Genome.objects.filter(id=self.id).update(evolving=False)
+            self.evolving = False
+            Genome.objects.filter(id=self.id).update(evolving=self.evolving)
             settings.DEBUG = tmp_debug
             #django.db.transaction.commit()
             connection.close()
@@ -2128,6 +2139,12 @@ class Genotype(models.Model):
         db_index=True,
         help_text=_('If true, indicates this predictor has been evaluated.'))
     
+    immortal = models.BooleanField(
+        default=False,
+        editable=True,
+        db_index=True,
+        help_text=_('If true, this genotype will not be automatically deleted if it is found to be inferior.'))
+    
     valid = models.BooleanField(
         default=True,
         #editable=False,
@@ -2354,7 +2371,7 @@ class Genotype(models.Model):
             self.total_evaluation_seconds = (self.fitness_evaluation_datetime - self.fitness_evaluation_datetime_start).seconds
         
         if self.epoche is None or self.epoche_of_evaluation != self.epoche.index:
-            self.epoche = Epoche.objects.get_or_create(genome=self.genome, index=self.epoche_of_evaluation)[0]
+            self.epoche = Epoche.objects.get_or_create(genome=self.genome, index=self.epoche_of_evaluation or self.genome.epoche)[0]
         
         super(Genotype, self).save(using=using, *args, **kwargs)
     
