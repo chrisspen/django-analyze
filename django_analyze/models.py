@@ -1630,6 +1630,8 @@ class Genome(BaseModel):
         Does nothing if any dependent genomes are not ready.
         """
         prod_ready = self.is_production_ready()
+        self.production_fresh = prod_ready
+        self.save()
         dep_genomes = list(self.get_dependent_genomes()) or None
         print '\tproduction ready:',prod_ready
         print '\tdependent genomes:',dep_genomes
