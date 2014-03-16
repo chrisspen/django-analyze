@@ -56,26 +56,24 @@ class PredictorAdmin(BaseModelAdmin):
     )
     
     def refresh(self, request, queryset):
-        for obj in queryset:
-            obj.fresh = False
-            obj.save()
+        queryset.update(fresh=False)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     refresh.short_description = 'Mark selected %(verbose_name_plural)s as stale'
     
     def clear(self, request, queryset):
-        for obj in queryset:
-            obj.training_mean_squared_error = None
-            obj.training_mean_absolute_error = None
-            obj.testing_mean_absolute_error = None
-            obj.testing_mean_squared_error = None
-            obj.predicted_score = None
-            obj.predicted_prob = None
-            obj.reference_difference = None
-            obj.reference_value = None
-            obj.expected_value = None
-            obj.predicted_value = None
-            obj.fresh = False
-            obj.save()
+        queryset.update(
+            training_mean_squared_error = None,
+            training_mean_absolute_error = None,
+            testing_mean_absolute_error = None,
+            testing_mean_squared_error = None,
+            predicted_score = None,
+            predicted_prob = None,
+            reference_difference = None,
+            reference_value = None,
+            expected_value = None,
+            predicted_value = None,
+            fresh = False,
+        )
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     clear.short_description = 'Clear metrics on selected %(verbose_name_plural)s'
     
