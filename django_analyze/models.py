@@ -2458,6 +2458,11 @@ class Genotype(models.Model):
             self.production_complete_parts = complete_parts
             self.production_success_ratio = success_parts/float(total_parts) if total_parts else None
             self.production_ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
+            
+            self.production_complete_ratio = None
+            if self.production_total_parts is not None and self.production_complete_parts is not None:
+                self.production_complete_ratio = self.production_complete_parts/float(self.production_total_parts)
+            
             type(self).objects.filter(id=self.id).update(
                 production_total_parts=self.production_total_parts,
                 production_complete_parts=self.production_complete_parts,
@@ -2473,6 +2478,11 @@ class Genotype(models.Model):
             self.complete_parts = complete_parts
             self.success_ratio = success_parts/float(total_parts) if total_parts else None
             self.ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
+            
+            self.complete_ratio = None
+            if self.total_parts is not None and self.complete_parts is not None:
+                self.complete_ratio = self.complete_parts/float(self.total_parts)
+                
             type(self).objects.filter(id=self.id).update(
                 total_parts=self.total_parts,
                 complete_parts=self.complete_parts,
