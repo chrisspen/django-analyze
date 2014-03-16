@@ -1597,7 +1597,7 @@ class Genome(BaseModel):
             # Run the backend evaluator.
             try:
                 gt.error = None # This may be overriden
-                self.evaluator_function(gt)
+                self.evaluator_function(gt, force_reset=force_reset)
                 gt.fitness_evaluation_datetime = timezone.now()
                 gt.fresh = True # evaluated, even if failed
                 gt.evaluating = False
@@ -2514,11 +2514,11 @@ class Genotype(models.Model):
             self.epoche = Epoche.objects.get_or_create(genome=self.genome, index=self.epoche_of_evaluation or self.genome.epoche)[0]
         
         self.complete_ratio = None
-        if self.total_parts is not None and self.complete_parts is not None:
+        if self.total_parts and self.complete_parts is not None:
             self.complete_ratio = self.complete_parts/float(self.total_parts)
         
         self.production_complete_ratio = None
-        if self.production_total_parts is not None and self.production_complete_parts is not None:
+        if self.production_total_parts and self.production_complete_parts is not None:
             self.production_complete_ratio = self.production_complete_parts/float(self.production_total_parts)
             
         super(Genotype, self).save(using=using, *args, **kwargs)
