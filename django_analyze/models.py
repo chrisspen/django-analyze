@@ -1648,7 +1648,10 @@ class Genome(BaseModel):
                     print>>sys.stderr, 'Genome %i depends on genome %i which is not ready.' % (self.id, dep_genome.id)
                     return False
         self.evaluator_function(self.production_genotype, test=False)
-        return self.is_production_ready()
+        ret = self.is_production_ready()
+        self.production_fresh = True
+        self.save()
+        return ret
 
 class Epoche(BaseModel):
     
