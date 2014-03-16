@@ -1630,16 +1630,16 @@ class Genome(BaseModel):
         Does nothing if any dependent genomes are not ready.
         """
         prod_ready = self.is_production_ready()
-        self.production_fresh = prod_ready
-        self.save()
+        self.production_genotype.production_fresh = prod_ready
+        self.production_genotype.save()
         dep_genomes = list(self.get_dependent_genomes()) or None
         print '\tproduction ready:',prod_ready
         print '\tdependent genomes:',dep_genomes
-        if self.evolving:
-            #TODO:allow if the production genotype has already been evaluated?
-            print>>sys.stderr, 'Genome %i is currently evolving. Halt evolution before evaluating for production use.' % self.id
-            return False
-        elif prod_ready:
+#        if self.evolving:
+#            #TODO:allow if the production genotype has already been evaluated?
+#            print>>sys.stderr, 'Genome %i is currently evolving. Halt evolution before evaluating for production use.' % self.id
+#            return False
+        if prod_ready:
             # Don't evaluate if there's nothing to do.
             return True
         elif dep_genomes:
@@ -1650,10 +1650,10 @@ class Genome(BaseModel):
                     print>>sys.stderr, 'Genome %i depends on genome %i which is not ready.' % (self.id, dep_genome.id)
                     return False
         self.evaluator_function(self.production_genotype, test=False)
-        ret = self.is_production_ready()
-        self.production_fresh = True
-        self.save()
-        return ret
+        prod_ready = self.is_production_ready()
+        self.production_genotype.production_fresh = prod_ready
+        self.production_genotype.save()
+        return prod_ready
 
 class Epoche(BaseModel):
     
