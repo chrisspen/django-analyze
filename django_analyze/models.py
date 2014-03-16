@@ -2470,6 +2470,7 @@ class Genotype(models.Model):
                 production_ontime_parts=self.production_ontime_parts,
                 production_success_ratio=self.production_success_ratio,
                 production_ontime_ratio=self.production_ontime_ratio,
+                production_complete_ratio=self.production_complete_ratio,
             )
         else:
             self.total_parts = total_parts
@@ -2490,6 +2491,7 @@ class Genotype(models.Model):
                 ontime_parts=self.ontime_parts,
                 success_ratio=self.success_ratio,
                 ontime_ratio=self.ontime_ratio,
+                complete_ratio=self.complete_ratio,
             )
     
     def save(self, check_fingerprint=True, using=None, *args, **kwargs):
