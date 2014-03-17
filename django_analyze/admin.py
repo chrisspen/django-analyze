@@ -209,10 +209,12 @@ class GenomeAdmin(BaseModelAdmin):
         
         'min_fitness',
         'max_fitness',
-        'production_at_best',
         'improving',
         'evolving',
-        'evolution_start_datetime',
+        #'evolution_start_datetime',
+        
+        'production_at_best',
+        'is_production_ready',
     )
     
     list_filter = (
@@ -241,6 +243,7 @@ class GenomeAdmin(BaseModelAdmin):
         'genotypes_link',
         'evolution_start_datetime',
         'production_at_best',
+        'is_production_ready',
         
         'total_genotype_count',
         'pending_genotype_count',
@@ -285,9 +288,11 @@ class GenomeAdmin(BaseModelAdmin):
         }),
         ('Production', {
             'fields': (
+                'production_at_best',
+                'is_production_ready',
                 'production_genotype_auto',
                 'production_genotype',
-                'production_at_best',
+                'production_evaluation_timeout',
             )
         }),
         ('Options', {
@@ -541,6 +546,10 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'production_ontime_parts',
         'production_success_ratio',
         'production_ontime_ratio',
+        'production_evaluation_start_datetime',
+        'production_evaluation_end_datetime',
+        'production_evaluation_seconds',
+        'production_evaluation_seconds_str',
     ]
     
 #    exclude = (
@@ -674,7 +683,6 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
             ('Production status', {
                 'fields': [
                     'production_complete_percent',
-                    
                     'production_fresh',
                     'production_valid',
                     'production_error',
@@ -684,6 +692,10 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                     'production_ontime_parts',
                     'production_success_ratio',
                     'production_ontime_ratio',
+                    'production_evaluation_start_datetime',
+                    'production_evaluation_end_datetime',
+                    'production_evaluation_seconds',
+                    'production_evaluation_seconds_str',
                 ]
             }),
         ]

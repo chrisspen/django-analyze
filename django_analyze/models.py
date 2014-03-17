@@ -468,6 +468,13 @@ class Predictor(BaseModel, MaterializedView):
         editable=False,
         help_text='The predicted future value minus a reference value.')
     
+    def percent_change(self):
+        n = self.predicted_value
+        o = self.reference_value
+        if n is None or o is None:
+            return
+        return (n - o)/float(o)
+    
     predicted_prob = models.FloatField(
         blank=True,
         null=True,
@@ -815,7 +822,15 @@ class Genome(BaseModel):
         default=False,
         db_index=True,
         editable=False,
-        help_text=_('If true, indicates the production genotype is the most fit of all known genotypes.'))
+        help_text=_('''If true, indicates the production genotype is the most
+            fit of all known genotypes.'''))
+    
+    production_evaluation_timeout = models.PositiveIntegerField(
+        default=0,
+        blank=True,
+        null=True,
+        help_text=_('''If non-zero, the number of seconds the production
+            genotype will be evaluated for production use.'''))
     
     evaluating_part = models.PositiveIntegerField(
         default=0,
@@ -1164,6 +1179,8 @@ class Genome(BaseModel):
             if not dependent_genome.is_production_ready():
                 return False
         return self.is_production_ready_function(genotype=self.production_genotype)
+    is_production_ready.boolean = True
+    is_production_ready.short_description = 'production ready'
     
     def get_dependent_genomes(self):
         """
@@ -1629,12 +1646,16 @@ class Genome(BaseModel):
         Prepares the production genotype for production use.
         Does nothing if any dependent genomes are not ready.
         """
+        if not self.production_genotype:
+            print 'No production genotype set.'
+            return False
         prod_ready = self.is_production_ready()
         self.production_genotype.production_fresh = prod_ready
         self.production_genotype.save()
         dep_genomes = list(self.get_dependent_genomes()) or None
         print '\tproduction ready:',prod_ready
         print '\tdependent genomes:',dep_genomes
+        #return
 #        if self.evolving:
 #            #TODO:allow if the production genotype has already been evaluated?
 #            print>>sys.stderr, 'Genome %i is currently evolving. Halt evolution before evaluating for production use.' % self.id
@@ -1647,9 +1668,11 @@ class Genome(BaseModel):
                 if not dep_genome.is_production_ready():
                     # Don't evaluate if we're dependent on another genome
                     # that's not production ready.
-                    print>>sys.stderr, 'Genome %i depends on genome %i which is not ready.' % (self.id, dep_genome.id)
+                    print>>sys.stderr, \
+                        'Genome %i depends on genome %i which is not ready.' \
+                            % (self.id, dep_genome.id)
                     return False
-        self.evaluator_function(self.production_genotype, test=False)
+        self.evaluator_function(genotype=self.production_genotype, test=False)
         prod_ready = self.is_production_ready()
         self.production_genotype.production_fresh = prod_ready
         self.production_genotype.save()
@@ -2314,6 +2337,43 @@ class Genotype(models.Model):
         null=True,
         help_text=_('Any error message received during evaluation.'))
     
+    production_evaluation_start_datetime = models.DateTimeField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        verbose_name=_('evaluation start time'))
+    
+    production_evaluation_end_datetime = models.DateTimeField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        verbose_name=_('evaluation stop time'))
+    
+    def production_evaluation_seconds(self):
+        start = self.production_evaluation_start_datetime
+        end = self.production_evaluation_end_datetime
+        if start is None or end is None:
+            return
+        return (end - start).seconds
+    production_evaluation_seconds.short_description = 'evaluation time (seconds)'
+    
+    def production_evaluation_seconds_str(self):
+        from datetime import datetime, timedelta
+        total_seconds = self.production_evaluation_seconds()
+        if total_seconds is None:
+            return
+        sec = timedelta(seconds=total_seconds)
+        d = datetime(1,1,1) + sec
+        days = d.day-1
+        hours = d.hour
+        minutes = d.minute
+        seconds = d.second
+        return '%02i:%02i:%02i:%02i' % (days, hours, minutes, seconds)
+    production_evaluation_seconds_str.short_description = 'evaluation time (days:hours:min:sec)'
+    production_evaluation_seconds_str.allow_tags = True
+    
     class Meta:
         app_label = APP_LABEL
         verbose_name = _('genotype')
@@ -2525,6 +2585,12 @@ class Genotype(models.Model):
         self.production_complete_ratio = None
         if self.production_total_parts and self.production_complete_parts is not None:
             self.production_complete_ratio = self.production_complete_parts/float(self.production_total_parts)
+            
+        if self.production_fresh:
+            if not self.production_evaluation_start_datetime:
+                self.production_evaluation_start_datetime = timezone.now()
+            if not self.production_evaluation_end_datetime:
+                self.production_evaluation_end_datetime = timezone.now()
             
         super(Genotype, self).save(using=using, *args, **kwargs)
     
