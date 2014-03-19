@@ -241,6 +241,7 @@ class GenomeAdmin(BaseModelAdmin):
         'improving',
         'total_possible_genotypes_sci',
         'genotypes_link',
+        'genestats_link',
         'evolution_start_datetime',
         'production_at_best',
         'is_production_ready',
@@ -270,6 +271,7 @@ class GenomeAdmin(BaseModelAdmin):
         ('Related models', {
             'fields': (
                 'genes_link',
+                'genestats_link',
                 'species_link',
                 'genotypes_link',
                 'epoches_link',
@@ -324,6 +326,13 @@ class GenomeAdmin(BaseModelAdmin):
         return view_related_link(obj, 'species')
     species_link.allow_tags = True
     species_link.short_description = 'species'
+    
+    def genestats_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_related_link(obj, 'gene_statistics')
+    genestats_link.allow_tags = True
+    genestats_link.short_description = 'gene statistics'
     
     def epoches_link(self, obj=None):
         if not obj:
@@ -748,6 +757,45 @@ class EpocheAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.Rea
     )
     
 admin.site.register(models.Epoche, EpocheAdmin)
+
+class GeneStatisticsAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.ReadonlyModelAdmin):
+    
+    list_display = (
+        'genome',
+        'gene',
+        'value',
+        'min_fitness',
+        'mean_fitness',
+        'max_fitness',
+        'genotype_count',
+    )
+    
+    list_display_links = []
+    
+    list_filter = (
+        'genome',
+        'gene',
+    )
+    
+    raw_id_fields = (
+        'genome',
+        'gene',
+    )
+    
+    actions = (
+        'refresh',
+    )
+    
+    def refresh(self, request, queryset):
+        #queryset.update(fresh=False)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    refresh.short_description = 'Refresh selected %(verbose_name_plural)s'
+    
+    def lookup_allowed(self, key, value=None):
+        return True
+    
+admin.site.register(models.GeneStatistics, GeneStatisticsAdmin)
+
 
 class LabelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 

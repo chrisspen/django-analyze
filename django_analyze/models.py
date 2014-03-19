@@ -1729,6 +1729,126 @@ class Epoche(BaseModel):
             
         super(Epoche, self).save(*args, **kwargs)
 
+class GeneStatistics(BaseModel):
+    """
+    Tracks gene fitness statistics within a specific epoche.
+    """
+    
+    id = models.CharField(
+        max_length=1000,
+        primary_key=True,
+        editable=False,
+        blank=False,
+        null=False)
+    
+    genome = models.ForeignKey(
+        'Genome',
+        editable=False,
+        blank=False,
+        null=False,
+        related_name='gene_statistics',
+        db_column='genome_id')
+    
+    gene = models.ForeignKey(
+        'Gene',
+        editable=False,
+        blank=False,
+        null=False,
+        db_column='gene_id')
+    
+    value = models.CharField(
+        max_length=1000,
+        editable=False,
+        blank=False,
+        null=False)
+    
+    min_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The smallest observed fitness.'))
+    
+    mean_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The mean observed fitness.'))
+    
+    max_fitness = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The largest observed fitness.'))
+    
+    genotype_count = models.PositiveIntegerField(
+        blank=False,
+        null=False,
+        editable=False,
+        verbose_name=_('genotypes'),
+        help_text=_('The number of genotypes using this specific gene value.'),
+    )
+    
+    class Meta:
+        managed = False
+        app_label = APP_LABEL
+        verbose_name = _('gene statistics')
+        verbose_name_plural = _('gene statistics')
+        ordering = ('genome', 'gene', '-mean_fitness')
+        
+#class EpocheGene(BaseModel):
+#    """
+#    Tracks gene fitness statistics within a specific epoche.
+#    """
+#    
+#    epoche = models.ForeignKey('Epoche', editable=False)
+#    
+#    gene = models.ForeignKey('Gene', editable=False)
+#    
+#    value = models.CharField(
+#        max_length=1000,
+#        editable=False,
+#        db_index=True,
+#        blank=False,
+#        null=False)
+#    
+#    min_fitness = models.FloatField(
+#        blank=True,
+#        null=True,
+#        editable=False,
+#        db_index=True,
+#        help_text=_('The smallest observed fitness.'))
+#    
+#    mean_fitness = models.FloatField(
+#        blank=True,
+#        null=True,
+#        editable=False,
+#        db_index=True,
+#        help_text=_('The mean observed fitness.'))
+#    
+#    max_fitness = models.FloatField(
+#        blank=True,
+#        null=True,
+#        editable=False,
+#        db_index=True,
+#        help_text=_('The largest observed fitness.'))
+#    
+#    class Meta:
+#        app_label = APP_LABEL
+#        unique_together = (
+#            ('epoche', 'gene', 'value'),
+#        )
+#        ordering = ('epoche', 'gene', 'value')
+#    
+#    @classmethod
+#    def populate(cls, epoche):
+#        exclude_gene_ids = cls.objects.filter(epoche=epoche).values_list('gene__id', flat=True)
+#        genome = epoche.genome
+#        fit_genotypes = genome.genotypes.filter(fitness__isnull=False)
+#    
+#    def save(self, force_recalc=False, *args, **kwargs):
+#            
+#        super(EpocheGene, self).save(*args, **kwargs)
+
 class GeneDependency(BaseModel):
     """
     Defines when a gene can be used if the dependee gene exists
