@@ -1300,7 +1300,10 @@ class Genome(BaseModel):
                 ))
                 sys.stdout.flush()
                 
-                valid_genotypes = self.valid_genotypes
+                # Note, we can't just look at fresh genotypes, because all may
+                # have been marked as stale prior to population.
+                #valid_genotypes = self.valid_genotypes
+                valid_genotypes = Genotype.objects.filter(valid=True, fitness__isnull=False).filter(genome=self)
                 random_valid_genotypes = valid_genotypes.order_by('?')
                 last_pending = pending
                 creation_type = random.randint(1,11)
@@ -1500,13 +1503,12 @@ class Genome(BaseModel):
                     #TODO:make this optional?
                     self.genotypes.all().update(fresh=False)
                 
-                    # Creates the initial genotypes for the new epoche.
-                    # Note, must come before add_missing_genes in case hybridization
-                    # results in gene loss.
-                    if populate:
-                        print 'Populating...'
-                        self.populate()
-                        
+                # Creates the initial genotypes for the new epoche.
+                # Note, must come before add_missing_genes in case hybridization
+                # results in gene loss.
+                if populate:
+                    print 'Populating...'
+                    self.populate()
                 else:
                     print 'Skipping population.'
                 
