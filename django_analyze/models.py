@@ -30,6 +30,8 @@ from django.db.models import signals
 
 from django_materialized_views.models import MaterializedView
 
+from chroniker.models import Job
+
 from admin_steroids.utils import StringWithTitle
 APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
 
@@ -1536,7 +1538,25 @@ class Genome(BaseModel):
                             process_stack.append(p)
                         # Wait for processes to end.
                         while any(p for p in process_stack if p.is_alive()):
-                            time.sleep(0.1)
+                            
+                            Genotype.objects.update()
+                            overall_current_count = Genotype.objects.filter(genome__id=self.id, fresh=True).count()
+                            overall_total_count = Genotype.objects.filter(genome__id=self.id).count()
+                            Job.update_progress(
+                                total_parts_complete=overall_current_count,
+                                total_parts=overall_total_count,
+                            )
+                            
+                            time.sleep(10)
+                        
+                        # Make final update.
+                        Genotype.objects.update()
+                        overall_current_count = Genotype.objects.filter(genome__id=self.id, fresh=True).count()
+                        overall_total_count = Genotype.objects.filter(genome__id=self.id).count()
+                        Job.update_progress(
+                            total_parts_complete=overall_current_count,
+                            total_parts=overall_total_count,
+                        )
                         
                         # Reload the current genome in case we've received updates.
                         Genome.objects.update()
