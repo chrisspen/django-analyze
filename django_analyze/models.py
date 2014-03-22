@@ -502,6 +502,11 @@ class Predictor(BaseModel, MaterializedView):
         db_index=True,
         help_text='If true, indicates this predictor is ready to classify.')
 
+    valid = models.NullBooleanField(
+        editable=False,
+        db_index=True,
+        help_text='If true, indicates this was trained without error.')
+    
     #@classmethod
     #def create(cls):
 
@@ -1267,7 +1272,8 @@ class Genome(BaseModel):
                 self.delete_corrupt()
                 
                 #TODO:only look at fitness__isnull=True if maximum_population=0 or delete_inferiors=False?
-                pending = self.pending_genotypes.count()
+                #pending = self.pending_genotypes.count()
+                pending = self.genotypes.all().count()
                 if pending >= self.maximum_population:
                     print 'Maximum unevaluated population has been reached.'
                     break
@@ -1524,52 +1530,72 @@ class Genome(BaseModel):
                 # Evaluate un-evaluated genotypes.
                 #max_fitness = self.max_fitness
                 if evaluate:
-                    if genotype_id:
-                        self.evaluate(genotype_id=genotype_id, force_reset=force_reset)
-                        return
-                    else:
+#                    if genotype_id:
+#                        self.evaluate(genotype_id=genotype_id, force_reset=force_reset)
+#                        return
+#                    else:
                         
-                        # Start processes.
-                        process_stack = []
-                        lock = Lock()
-                        for _ in xrange(processes):
-                            django.db.connection.close()
-                            p = Process(target=self.evaluate, kwargs=dict(lock=lock))
-                            #p.daemon = True#breaks evaluate() launching processes of its own
-                            p.start()
-                            process_stack.append(p)
-                        # Wait for processes to end.
-                        while any(p for p in process_stack if p.is_alive()):
-                            
+                    # Start processes.
+                    progress = utils.MultiProgress(clear=False)
+                    process_stack = []
+                    lock = Lock()
+                    if genotype_id:
+                        processes = 1
+                    for _ in xrange(processes):
+                        django.db.connection.close()
+                        p = Process(
+                            target=self.evaluate,
+                            kwargs=dict(
+                                lock=lock,
+                                progress=progress,
+                                genotype_id=genotype_id,
+                                force_reset=force_reset,
+                            ))
+                        #p.daemon = True#breaks evaluate() launching processes of its own
+                        p.start()
+                        process_stack.append(p)
+                        
+                    # Wait for processes to end.
+                    i = 0
+                    while any(p for p in process_stack if p.is_alive()):
+                        i += 1
+                        if not i % 10:
                             Genotype.objects.update()
-                            overall_current_count = Genotype.objects.filter(genome__id=self.id, fresh=True).count()
-                            overall_total_count = Genotype.objects.filter(genome__id=self.id).count()
+                            q = Genotype.objects.filter(genome__id=self.id)
+                            if genotype_id:
+                                q = q.filter(id=int(genotype_id))
+                            overall_total_count = q.count()
+                            overall_current_count = q.filter(fresh=True).count()
                             Job.update_progress(
                                 total_parts_complete=overall_current_count,
                                 total_parts=overall_total_count,
                             )
-                            
-                            time.sleep(10)
                         
-                        # Make final update.
-                        Genotype.objects.update()
-                        overall_current_count = Genotype.objects.filter(genome__id=self.id, fresh=True).count()
-                        overall_total_count = Genotype.objects.filter(genome__id=self.id).count()
-                        Job.update_progress(
-                            total_parts_complete=overall_current_count,
-                            total_parts=overall_total_count,
-                        )
-                        
-                        # Reload the current genome in case we've received updates.
-                        Genome.objects.update()
-                        genome = self = Genome.objects.get(id=self.id)
+                        time.sleep(.1)
+                        progress.flush()
+                    
+                    # Make final update.
+                    Genotype.objects.update()
+                    q = Genotype.objects.filter(genome__id=self.id)
+                    if genotype_id:
+                        q = q.filter(id=int(genotype_id))
+                    overall_total_count = q.count()
+                    overall_current_count = q.filter(fresh=True).count()
+                    Job.update_progress(
+                        total_parts_complete=overall_current_count,
+                        total_parts=overall_total_count,
+                    )
+                    
+                    # Reload the current genome in case we've received updates.
+                    Genome.objects.update()
+                    genome = self = Genome.objects.get(id=self.id)
+                    if not genotype_id:
                         genome.epoche += 1
                         genome.epoches_since_improvement += 1
                         #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
                         genome.set_production_genotype(save=False)
-                        genome.save()
-#                        self.epoche = genome.epoche
-#                        self.epoches_since_improvement = genome.epoches_since_improvement
+                    genome.evolving = True
+                    genome.save()
                 else:
                     return
                 
@@ -1589,7 +1615,7 @@ class Genome(BaseModel):
             connection.close()
         print 'Done.'
             
-    def evaluate(self, genotype_id=None, force_reset=False, lock=None, fout=None):
+    def evaluate(self, genotype_id=None, force_reset=False, lock=None, fout=None, progress=None):
         """
         Calculates the fitness of all currently unevaluated genotypes
         using the genome's linked fitness metric.
@@ -1636,7 +1662,8 @@ class Genome(BaseModel):
             # Run the backend evaluator.
             try:
                 gt.error = None # This may be overriden
-                self.evaluator_function(gt, force_reset=force_reset)
+                gt.total_evaluation_seconds = None
+                self.evaluator_function(gt, force_reset=force_reset, progress=progress)
                 gt.fitness_evaluation_datetime = timezone.now()
                 gt.fresh = True # evaluated, even if failed
                 gt.evaluating = False
@@ -2251,9 +2278,17 @@ class Genotype(models.Model):
         editable=False,
         verbose_name=_('evaluation stop time'))
     
-    mean_evaluation_seconds = models.PositiveIntegerField(blank=True, null=True, editable=False)
+    mean_evaluation_seconds = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False)
     
-    total_evaluation_seconds = models.PositiveIntegerField(blank=True, null=True, editable=False)
+    total_evaluation_seconds = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('''The total time it last took to evaluate
+            the genotype.'''))
     
     mean_absolute_error = models.FloatField(
         blank=True,
@@ -2474,6 +2509,11 @@ class Genotype(models.Model):
     production_complete_percent.admin_order_field = 'production_complete_ratio'
     production_complete_percent.short_description = 'complete percent'
     
+    def production_complete_percent2(self):
+        return self.production_complete_percent()
+    production_complete_percent2.admin_order_field = 'production_complete_ratio'
+    production_complete_percent2.short_description = 'complete percent (production)'
+        
     production_error = models.TextField(
         blank=True,
         null=True,
@@ -2713,8 +2753,7 @@ class Genotype(models.Model):
                 
         self.full_clean(check_fingerprint=check_fingerprint)
         
-        self.total_evaluation_seconds = 0
-        if self.fitness_evaluation_datetime and self.fitness_evaluation_datetime_start:
+        if self.total_evaluation_seconds is None and self.fitness_evaluation_datetime and self.fitness_evaluation_datetime_start:
             self.total_evaluation_seconds = (self.fitness_evaluation_datetime - self.fitness_evaluation_datetime_start).seconds
         
         if self.epoche is None or self.epoche_of_evaluation != self.epoche.index:

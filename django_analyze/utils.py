@@ -1,10 +1,12 @@
 import os
-import sys
-import time
-from multiprocessing import Process
-from collections import defaultdict
 import random
+import sys
 import threading
+import time
+
+from datetime import datetime
+from collections import defaultdict, OrderedDict
+from multiprocessing import Process, Queue, Lock, current_process
 
 import psutil
 
@@ -152,7 +154,7 @@ class TimedProcess(Process):
         super(TimedProcess, self).start(*args, **kwargs)
         self._p = psutil.Process(self.pid)
     
-    def start_then_kill(self, verbose=True, block=True):
+    def start_then_kill(self, verbose=True, block=True, fout=None):
         """
         Starts and then kills the process if a timeout occurs.
         
@@ -160,36 +162,47 @@ class TimedProcess(Process):
         """
         self.start()
         if block:
-            return self.wait_until_finished_or_stale(verbose=verbose)
+            return self.wait_until_finished_or_stale(verbose=verbose, fout=fout)
         else:
             thread = threading.Thread(
                 target=self.wait_until_finished_or_stale,
-                kwargs=dict(verbose=verbose))
+                kwargs=dict(verbose=verbose, fout=fout))
             thread.daemon = True
             thread.start()
             return thread
     
-    def wait_until_finished_or_stale(self, verbose=True):
+    def wait_until_finished_or_stale(self, verbose=True, fout=None):
         """
         Blocks until the unlying process exits or exceeds the predefined
         timeout threshold and is killed.
         """
+        pid0 = os.getpid()
+        fout = fout or self.fout
         timeout = False
         if verbose:
-            print>>self.fout
-            print>>self.fout
+            print>>fout
+            print>>fout
         while 1:
+            if pid0 != os.getpid():
+                return
             time.sleep(1)
-            if verbose:
-                print>>self.fout, '\r\t%.0f seconds until timeout.' \
+            #assert isinstance(fout, MultiProgress), 'Fout is of type %s' % (type(fout),)
+            if isinstance(fout, MultiProgress):
+                fout.seconds_until_timeout = self.seconds_until_timeout
+            elif verbose:
+                print>>fout, '\r\t%.0f seconds until timeout.' \
                     % (self.seconds_until_timeout,),
-                self.fout.flush()
+                fout.flush()
             if not self.is_alive():
                 break
             elif self.is_expired:
                 if verbose:
-                    print>>self.fout
-                    print>>self.fout, 'Attempting to terminate expired process %s...' % (self.pid,)
+                    msg = 'Attempting to terminate expired process %s...' % (self.pid,)
+                    if isinstance(fout, MultiProgress):
+                        fout.write(msg)
+                    else:
+                        print>>fout
+                        print>>fout, msg
                 timeout = True
                 self.terminate()
                 break
@@ -264,4 +277,243 @@ def weighted_samples(choices, k=1):
         item = weighted_choice(choices)
         del choices[item]
         yield item
+
+class MultiProgress(object):
+    """
+    Helper class for organizing progress reporting among multiple processes.
+    """
+    
+    def __init__(self, **kwargs):
+        
+        self.__dict__.update(dict(
+            
+            # If true, causes flush() to clear the screen before output.
+            clear=True,
+            
+            # If true, appends a newline to all lines.
+            newline=True,
+            
+            # The true file descriptor where output will be sent.
+            fout=sys.stdout,
+            
+            # A string to show before all output.
+            # Only really useful when clear=True.
+            title=None,
+            
+            # If true, causes flush() to not display processes that report
+            # 100% completion.
+            hide_complete=True,
+            
+            # If true, causes flush() to only display output when something
+            # changes.
+            only_changes=True,
+            
+        ), **kwargs)
+        
+        self.progress = OrderedDict()
+        self.progress_done = set()
+        self.status = Queue()
+        self.last_progress_refresh = None
+        self.bar_length = 10
+        self.pid_counts = {}
+        self.refresh_period = 0.5
+        
+        # Variables used for the child process.
+        self.pid = None
+        self.current_count = 0
+        self.total_count = 0
+        self.sub_current = 0
+        self.sub_total = 0
+        self.seconds_until_timeout = None
+        self.eta = None
+        self.changed = True
+    
+    def write(self, *message):
+        message = (' '.join(map(str, message))).strip()
+        if not message:
+            return
+#        if not self.pid:
+#            return
+        self.status.put([
+            self.pid,
+            self.current_count,
+            self.total_count,
+            self.sub_current,
+            self.sub_total,
+            self.eta,
+            self.seconds_until_timeout,
+            message,
+        ])
+        time.sleep(0.01)
+    
+    def flush(self):
+        """
+        Displays all output from all processes in an ordered list.
+        This should only be called by the parent process.
+        """
+        from chroniker.models import Job
+        if self.last_progress_refresh and (datetime.now()-self.last_progress_refresh).seconds < self.refresh_period:
+            return
+        elif self.status.empty():
+            return
+        
+        while not self.status.empty():
+            
+            # Load item from queue.
+            pid, current, total, sub_current, sub_total, eta, sut, message = self.status.get()
+            data = (current, total, sub_current, sub_total, eta, sut, message)
+            if self.progress.get(pid) != data:
+                self.changed = True
+            if self.only_changes and not self.changed:
+                continue
+            self.progress[pid] = data
+            
+            # Prepare screen.
+            if self.clear:
+                self.fout.write('\033[2J\033[H') #clear screen
+                if self.title:
+                    self.fout.write('%s\n' % self.title)
+                # Show last progress message from all processes.
+                items = self.progress.items()
+            else:
+                # Only show the message we just received.
+                items = [(pid, data)]
+            
+            # Display each process line.
+            for pid, (current, total, sub_current, sub_total, eta, sut, message) in items:
+                eta = eta or '?'
+                sut = sut or '?'
+                sub_status = ''
+                if self.hide_complete and current is not None and total is not None and current >= total and pid in self.progress_done:
+                    del self.progress[pid]
+                    continue
+                elif total:
+                    self.pid_counts[pid] = (current, total)
+                    percent = current/float(total)
+                    bar = ('=' * int(percent * self.bar_length)).ljust(self.bar_length)
+                    percent = int(percent * 100)
+                else:
+                    percent = 0
+                    bar = ('=' * int(percent * self.bar_length)).ljust(self.bar_length)
+                    percent = '?'
+                    total = '?'
+                if sub_current and sub_total:
+                    sub_status = '(subtask %s of %s) ' % (sub_current, sub_total)
+                self.fout.write(
+                    (('' if self.newline else '\r')+"%s [%s] %s of %s %s%s%% eta=%s sut=%s: %s"+('\n' if self.newline else '')) \
+                        % (pid, bar, current, total, sub_status, percent, eta, sut, message))
+                if current >= total:
+                    self.progress_done.add(pid)
+            self.fout.flush()
+            self.last_progress_refresh = datetime.now()
+        
+        # Update job.
+        if not self.only_changes or (self.only_changes and self.changed):
+            overall_current_count = 0
+            overall_total_count = 0
+            for pid, (current, total) in self.pid_counts.iteritems():
+                overall_current_count += current
+                overall_total_count += total
+            if overall_total_count:
+                Job.update_progress(
+                    total_parts_complete=overall_current_count,
+                    total_parts=overall_total_count,
+                )
+                
+        self.changed = False
+
+class ProcessFactory(object):
+    """
+    Helper task for launching and managing multiple processes.
+    """
+    
+    def __init__(self,
+        max_processes=1,
+        has_pending_tasks=None,
+        get_next_process=None,
+        handle_process_cleanup=None,
+        progress=None,
+        flush_progress=True):
+        
+        self.max_processes = max_processes
+        self.processes = []
+        self.complete_parts = 0
+        self.progress = progress or MultiProgress()
+        self._has_pending_tasks = has_pending_tasks
+        self._get_next_process = get_next_process
+        self._handle_process_cleanup = handle_process_cleanup
+        self.flush_progress = flush_progress
+    
+    def has_pending_tasks(self):
+        """
+        Returns the integer count of remaining tasks to run.
+        """
+        if callable(self._has_pending_tasks):
+            return self._has_pending_tasks(self)
+        raise NotImplementedError
+    
+    def get_next_process(self):
+        """
+        Returns the next process instance to run.
+        """
+        if callable(self._get_next_process):
+            return self._get_next_process(self)
+        raise NotImplementedError
+    
+    def handle_process_cleanup(self, process):
+        """
+        Called with the process that just terminated.
+        """
+        if callable(self._handle_process_cleanup):
+            return self._handle_process_cleanup(self, process)
+        #raise NotImplementedError
+    
+    def run(self):
+        pid0 = os.getpid()
+        total = self.has_pending_tasks()
+        self.progress.pid = os.getpid()
+        self.progress.total_count = total
+        while self.has_pending_tasks() or self.processes:
+            if pid0 != os.getpid():
+                return
+            
+            self.progress.current_count = self.complete_parts
+            self.progress.sub_current = 0
+            self.progress.sub_total = 0
+            self.progress.seconds_until_timeout = None
+            self.progress.eta = None
+            self.progress.write(
+                'SUMMARY: %i running processes with %i pending tasks left.' \
+                    % (len(self.processes), self.has_pending_tasks()))
+            
+            # Check for complete processes.
+            for process in list(self.processes):
+                if process.is_alive():
+                    continue
+                self.processes.remove(process)
+                self.complete_parts += 1
+                self.handle_process_cleanup(process)
+            
+            # Start another processes.
+            if self.has_pending_tasks() and len(self.processes) < self.max_processes:
+                process = self.get_next_process()
+                assert isinstance(process, Process), \
+                    'Process is of type %s but must be of type %s.' \
+                        % (type(process), Process)
+                process.start_then_kill(block=False, fout=self.progress)
+                self.processes.append(process)
+            
+            # Output progress messages.
+            if self.flush_progress:
+                self.progress.flush()
+            time.sleep(1)
+
+        self.progress.current_count = total
+        self.progress.total_count = total
+        self.progress.write(
+            'SUMMARY: %i running processes with %i pending tasks left.' \
+                % (len(self.processes), self.has_pending_tasks()))
+        self.progress.flush()
+        #TODO:fix? sometimes results in IOError: [Errno 32] Broken pipe?
+        time.sleep(1)
         
