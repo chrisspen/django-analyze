@@ -42,6 +42,28 @@ def sci_notation(n, prec=3):
     mantissa = n / base**exponent
     return '{0:.{1}f}e{2:+d}'.format(mantissa, prec, exponent)
 
+def get_cpu_usage(pid, recursive=True):
+    """
+    Returns the total CPU usage in seconds including both user
+    and system time.
+    """
+    total = 0
+    try:
+        p = psutil.Process(pid)
+        times = p.get_cpu_times()
+        total = times.user + times.system
+        if recursive:
+            children = list(p.get_children(recursive=True))
+            for child in children:
+                try:
+                    times = child.get_cpu_times()
+                    total += times.user + times.system
+                except psutil._error.NoSuchProcess:
+                    pass
+    except psutil._error.NoSuchProcess:
+        pass
+    return total
+
 #TODO:extend the use of Process to distributed architextures?
 #http://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing/
 class TimedProcess(Process):
@@ -72,7 +94,7 @@ class TimedProcess(Process):
     daemon = True
     
     #TODO:better way to track CPU time of process including all children?
-    def __init__(self, max_seconds, objective=False, recursive=True, fout=None, check_freq=1, *args, **kwargs):
+    def __init__(self, max_seconds, objective=False, recursive=True, fout=None, cpu_stall_penalty=None, check_freq=1, *args, **kwargs):
         super(TimedProcess, self).__init__(*args, **kwargs)
         self.fout = fout or sys.stdout
         self.objective = objective
@@ -88,6 +110,18 @@ class TimedProcess(Process):
         self._p = None
         self._process_times = {} # {pid:user_seconds}
         self._last_duraction_seconds = None
+        
+        # Number of seconds between status checks.
+        self.wait_period = 5
+        
+        # If no change in cpu time is detected between monitoring loops,
+        # this is the number of seconds that will be deducted from the
+        # remaining seconds until expiration.
+        if cpu_stall_penalty is None:
+            self.cpu_stall_penalty = self.wait_period
+        else:
+            self.cpu_stall_penalty = cpu_stall_penalty
+        self.total_cpu_stall_penalty = 0
     
     def terminate(self, *args, **kwargs):
         if self.is_alive() and self._p:
@@ -113,32 +147,44 @@ class TimedProcess(Process):
         If recursive=True is given, recursively finds all child-processed,
         if any, and includes their user-time in the total calculation.
         """
+        class Skip(Exception):pass
         objective = self.objective if objective is None else objective
         recursive = self.recursive if recursive is None else recursive
-        if self.is_alive():
-            if objective:
-                if self.t1_objective is not None:
-                    return self.t1_objective - self.t0_objective
-                self._last_duraction_seconds = time.time() - self.t0_objective
-            else:
-                if recursive:
-                    # Note, this calculation will consume much for user
-                    # CPU time itself than simply checking clock().
-                    # Recommend using larger check_freq to minimize this.
-                    # Note, we must store historical child times because child
-                    # processes may die, causing them to no longer be included in
-                    # future calculations, possibly corrupting the total time.
-                    self._process_times[self._p.pid] = self._p.get_cpu_times().user
-                    children = self._p.get_children(recursive=True)
-                    for child in children:
-                        self._process_times[child.pid] = child.get_cpu_times().user
-                    #TODO:optimize by storing total sum and tracking incremental changes?
-                    self._last_duraction_seconds = sum(self._process_times.itervalues())
+        ret = None
+        try:
+            if self.is_alive():
+                if objective:
+                    if self.t1_objective is not None:
+                        ret = self.t1_objective - self.t0_objective
+                        raise Skip
+                    self._last_duraction_seconds = time.time() - self.t0_objective
                 else:
-                    if self.t1 is not None:
-                        return self.t1 - self.t0
-                    self._last_duraction_seconds = time.clock() - self.t0
-        return self._last_duraction_seconds or 0
+                    if recursive:
+                        # Note, this calculation will consume much for user
+                        # CPU time itself than simply checking clock().
+                        # Recommend using larger check_freq to minimize this.
+                        # Note, we must store historical child times because child
+                        # processes may die, causing them to no longer be included in
+                        # future calculations, possibly corrupting the total time.
+                        times = self._p.get_cpu_times()
+                        self._process_times[self._p.pid] = times.user + times.system
+                        children = self._p.get_children(recursive=True)
+                        for child in children:
+                            times = child.get_cpu_times()
+                            self._process_times[child.pid] = times.user + times.system
+                        #TODO:optimize by storing total sum and tracking incremental changes?
+                        self._last_duraction_seconds = sum(self._process_times.itervalues())
+                    else:
+                        if self.t1 is not None:
+                            ret = self.t1 - self.t0
+                            raise Skip
+                        self._last_duraction_seconds = time.clock() - self.t0
+        except Skip:
+            pass
+        if ret is None:
+            ret = self._last_duraction_seconds or 0
+        ret += self.total_cpu_stall_penalty
+        return ret
         
     @property
     def is_expired(self):
@@ -179,20 +225,37 @@ class TimedProcess(Process):
         pid0 = os.getpid()
         fout = fout or self.fout
         timeout = False
+        last_cpu_usage = None
         if verbose:
             print>>fout
             print>>fout
         while 1:
             if pid0 != os.getpid():
+                print '~'*80
+                print 'Ending wait_until because pid stale:%s %s' % (pid0, os.getpid())
                 return
-            time.sleep(1)
+            time.sleep(self.wait_period)
             #assert isinstance(fout, MultiProgress), 'Fout is of type %s' % (type(fout),)
+            
+            cpu_usage = get_cpu_usage(pid=self.pid)
+            #print last_cpu_usage,cpu_usage,last_cpu_usage == cpu_usage
+            if last_cpu_usage is not None and last_cpu_usage == cpu_usage:
+                #print 'adding penalty:',self.total_cpu_stall_penalty
+                self.total_cpu_stall_penalty += self.cpu_stall_penalty
+            last_cpu_usage = cpu_usage
+            
             if isinstance(fout, MultiProgress):
-                fout.seconds_until_timeout = self.seconds_until_timeout
+                #fout.seconds_until_timeout = self.seconds_until_timeout
+                #print 'cpu_usage:',cpu_usage
+                fout.update_timeout(self.pid, sut=self.seconds_until_timeout, cpu=cpu_usage)
             elif verbose:
-                print>>fout, '\r\t%.0f seconds until timeout.' \
-                    % (self.seconds_until_timeout,),
-                fout.flush()
+                msg = '%.0f seconds until timeout (target=%s, local=%s, verbose=%s).' \
+                    % (self.seconds_until_timeout, self.pid, pid0, verbose)
+                print msg
+                pass
+#                print>>fout, msg
+#                fout.flush()
+
             if not self.is_alive():
                 break
             elif self.is_expired:
@@ -278,6 +341,8 @@ def weighted_samples(choices, k=1):
         del choices[item]
         yield item
 
+UPDATE_TIMEOUT = '!UPDATE_TIMEOUT!'
+
 class MultiProgress(object):
     """
     Helper class for organizing progress reporting among multiple processes.
@@ -308,6 +373,8 @@ class MultiProgress(object):
             # changes.
             only_changes=True,
             
+            show_timestamp=True,
+            
         ), **kwargs)
         
         self.progress = OrderedDict()
@@ -326,7 +393,28 @@ class MultiProgress(object):
         self.sub_total = 0
         self.seconds_until_timeout = None
         self.eta = None
+        self.cpu = None
+        
         self.changed = True
+    
+    def update_timeout(self, pid, sut, cpu):
+        """
+        A specialized version of write() that updates the
+        seconds_until_timeout value for a specific process,
+        usually from outside the process.
+        """
+        self.status.put([
+            pid,
+            None,
+            None,
+            None,
+            None,
+            None,
+            sut,
+            cpu,
+            UPDATE_TIMEOUT,
+        ])
+        time.sleep(0.01)
     
     def write(self, *message):
         message = (' '.join(map(str, message))).strip()
@@ -342,6 +430,7 @@ class MultiProgress(object):
             self.sub_total,
             self.eta,
             self.seconds_until_timeout,
+            self.cpu,
             message,
         ])
         time.sleep(0.01)
@@ -360,13 +449,21 @@ class MultiProgress(object):
         while not self.status.empty():
             
             # Load item from queue.
-            pid, current, total, sub_current, sub_total, eta, sut, message = self.status.get()
-            data = (current, total, sub_current, sub_total, eta, sut, message)
-            if self.progress.get(pid) != data:
+            pid, current, total, sub_current, sub_total, eta, sut, cpu, message = self.status.get()
+            if message == UPDATE_TIMEOUT:
+                new_sut = sut
+                new_cpu = cpu
+                (current, total, sub_current, sub_total, eta, sut, cpu, message) = (self.progress.get(pid) or (0, 0, 0, 0, None, None, None, ''))
+                data = (current, total, sub_current, sub_total, eta, new_sut, new_cpu, message)
+                self.progress[pid] = data
                 self.changed = True
-            if self.only_changes and not self.changed:
-                continue
-            self.progress[pid] = data
+            else:
+                data = (current, total, sub_current, sub_total, eta, sut, cpu, message)
+                if self.progress.get(pid) != data:
+                    self.changed = True
+                if self.only_changes and not self.changed:
+                    continue
+                self.progress[pid] = data
             
             # Prepare screen.
             if self.clear:
@@ -380,9 +477,10 @@ class MultiProgress(object):
                 items = [(pid, data)]
             
             # Display each process line.
-            for pid, (current, total, sub_current, sub_total, eta, sut, message) in items:
+            for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in items:
                 eta = eta or '?'
                 sut = sut or '?'
+                cpu = '?' if cpu is None else cpu
                 sub_status = ''
                 if self.hide_complete and current is not None and total is not None and current >= total and pid in self.progress_done:
                     del self.progress[pid]
@@ -399,9 +497,12 @@ class MultiProgress(object):
                     total = '?'
                 if sub_current and sub_total:
                     sub_status = '(subtask %s of %s) ' % (sub_current, sub_total)
+                ts = ''
+                if self.show_timestamp:
+                    ts = '%s: ' % datetime.now()
                 self.fout.write(
-                    (('' if self.newline else '\r')+"%s [%s] %s of %s %s%s%% eta=%s sut=%s: %s"+('\n' if self.newline else '')) \
-                        % (pid, bar, current, total, sub_status, percent, eta, sut, message))
+                    (('' if self.newline else '\r')+"%s%s [%s] %s of %s %s%s%% eta=%s sut=%s cpu=%s: %s"+('\n' if self.newline else '')) \
+                        % (ts, pid, bar, current, total, sub_status, percent, eta, sut, cpu, message))
                 if current >= total:
                     self.progress_done.add(pid)
             self.fout.flush()
@@ -482,9 +583,10 @@ class ProcessFactory(object):
             self.progress.sub_total = 0
             self.progress.seconds_until_timeout = None
             self.progress.eta = None
+            pid_str = ', '.join(str(_.pid) for _ in self.processes)
             self.progress.write(
-                'SUMMARY: %i running processes with %i pending tasks left.' \
-                    % (len(self.processes), self.has_pending_tasks()))
+                'SUMMARY: %i running processes (%s) with %i pending tasks left.' \
+                    % (len(self.processes), pid_str, self.has_pending_tasks()))
             
             # Check for complete processes.
             for process in list(self.processes):
