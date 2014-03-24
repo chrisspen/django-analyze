@@ -600,6 +600,10 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     def mark_stale(self, request, queryset):
         queryset.update(fresh=False)
+        genomes = set(queryset.values_list('genome', flat=True))
+        for genome_id in genomes:
+            genome = models.Genome.objects.only('id').get(id=genome_id)
+            genome.mark_stale_function(queryset.filter(genome=genome))
         i = queryset.count()
         messages.success(request, '%i genotypes were marked as stale.' % i)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])

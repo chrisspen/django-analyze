@@ -13,6 +13,7 @@ import tempfile
 import time
 import traceback
 from collections import defaultdict
+from threading import Thread
 
 from picklefield.fields import PickledObjectField
 
@@ -27,6 +28,9 @@ from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext, ugettext_lazy as _
 from django.db.models import signals
+from django.dispatch.dispatcher import Signal
+from django.core.signals import request_finished
+from django.dispatch import receiver
 
 from django_materialized_views.models import MaterializedView
 
@@ -642,6 +646,47 @@ class GenomeManager(models.Manager):
     def get_by_natural_key(self, name):
         return self.get_or_create(name=name)[0]
 
+def did_genotype_change(gt1, gt2):
+    """
+    Returns true if the given genotype changed in a manner requiring a Genome
+    to re-evaluate itself.
+    """
+    if gt1 and gt2:
+        if gt1 != gt2:
+            return True
+        elif not gt1.fresh and gt2.fresh:
+            return True
+    return False
+
+# Sent when a genome changes its production genotype of the production genotype
+# switches from stale to fresh.
+production_genotype_changed = Signal(providing_args=["genome"])
+#production_genotype_changed.send(sender=self, genome=genome)
+
+@receiver(production_genotype_changed)
+def handle_production_genotype_change(sender, genome, **kwargs):
+    """
+    Called when the production genotype in the given genome changes
+    in such a way that all dependent production genotypes should be marked
+    as stale so they too can be re-evaluated.
+    """
+    #print 'handling changed genome:',genome
+    
+    # Lookup all production genotpyes in genomes that depend on the given
+    # changed genome.
+    q = GenotypeGene.objects.filter(
+        gene__type=c.GENE_TYPE_GENOME,
+        _value=str(genome.id)
+    ).values_list('genotype__genome', flat=True)
+    #print 'dependent genomes:',q
+    
+    # Mark those genotypes as stale so they'll be re-tested with whatever
+    # new information is contained in the dependent genome.
+    # Note, this will not cause a cascade because a positive change only
+    # occurs when a genotype transitions from stale to fresh.
+    Genotype.objects.filter(genome__id__in=q)\
+        .update(fresh=False, production_fresh=False)
+
 class Genome(BaseModel):
     """
     All possible parameters of a problem domain.
@@ -903,9 +948,13 @@ class Genome(BaseModel):
     
     def save(self, *args, **kwargs):
         
+        old = None
+        old_production_genotype = None
+        
         if self.id:
             
             old = type(self).objects.get(id=self.id)
+            old_production_genotype = old.production_genotype
             
             q = self.genotypes.filter(fitness__isnull=False).exclude(fitness=float('nan'))\
                 .aggregate(Max('fitness'), Min('fitness'))
@@ -930,6 +979,9 @@ class Genome(BaseModel):
                 self.epoches_since_improvement = 0
         
         super(Genome, self).save(*args, **kwargs)
+        
+        if did_genotype_change(old_production_genotype, self.production_genotype):
+            production_genotype_changed.send(sender=self, genome=self)
     
     def organize_species(self, all=False, **kwargs):
         """
@@ -1374,6 +1426,10 @@ class Genome(BaseModel):
         return _evaluators.get(self.evaluator).evaluate_genotype
     
     @property
+    def mark_stale_function(self):
+        return _evaluators.get(self.evaluator).mark_stale_genotype
+    
+    @property
     def reset_function(self):
         return _evaluators.get(self.evaluator).reset_genotype
     
@@ -1461,6 +1517,7 @@ class Genome(BaseModel):
         genotype_id=None,
         populate=True,
         evaluate=True,
+        epoches=0,
         force_reset=False,
         continuous=False,
         cleanup=True,
@@ -1477,6 +1534,9 @@ class Genome(BaseModel):
         
         tmp_debug = settings.DEBUG
         settings.DEBUG = False
+        pid0 = os.getpid()
+        max_epoches = epoches
+        passed_epoches = 0
         try:
             self.evolving = True
             self.evolution_start_datetime = timezone.now()
@@ -1485,6 +1545,8 @@ class Genome(BaseModel):
                 evolution_start_datetime=self.evolution_start_datetime,
             )
             while 1:
+                if pid0 != os.getpid():
+                    return
                 
                 # Reset stuck genotypes.
                 self.genotypes.filter(evaluating=True)\
@@ -1556,23 +1618,40 @@ class Genome(BaseModel):
                         process_stack.append(p)
                         
                     # Wait for processes to end.
-                    i = 0
                     while any(p for p in process_stack if p.is_alive()):
-                        i += 1
-                        if not i % 10:
-                            Genotype.objects.update()
-                            q = Genotype.objects.filter(genome__id=self.id)
-                            if genotype_id:
-                                q = q.filter(id=int(genotype_id))
-                            overall_total_count = q.count()
-                            overall_current_count = q.filter(fresh=True).count()
-                            Job.update_progress(
-                                total_parts_complete=overall_current_count,
-                                total_parts=overall_total_count,
-                            )
                         
-                        time.sleep(.1)
+                        alive = [p for p in process_stack if p.is_alive()]
+                        
+                        Genotype.objects.update()
+                        q = Genotype.objects.filter(genome__id=self.id)
+                        if genotype_id:
+                            q = q.filter(id=int(genotype_id))
+                        overall_total_count = q.count()
+                        overall_current_count = q.filter(fresh=True).count()
+#                        from chroniker.models import get_current_heartbeat
+#                        hb = get_current_heartbeat()
+#                        print '!'*80
+#                        import thread
+#                        thread_ident = thread.get_ident()
+#                        print 'thread0:',thread_ident
+#                        print 'job_id0:',hb.job_id
+#                        print 'pid0:',os.getpid()
+#                        print 'total_parts0:',overall_total_count
+#                        print 'total_parts_complete0:',overall_current_count
+#                        print '!'*80
+                        Job.update_progress(
+                            total_parts_complete=overall_current_count,
+                            total_parts=overall_total_count,
+                        )
+                        progress.pid = os.getpid()#'EVOLVE'
+                        progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+                        progress.seconds_until_timeout = 1e999999999999999
+                        progress.current_count = overall_current_count
+                        progress.total_count = overall_total_count
+                        progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
                         progress.flush()
+                        
+                        time.sleep(1)
                     
                     # Make final update.
                     Genotype.objects.update()
@@ -1591,6 +1670,7 @@ class Genome(BaseModel):
                     genome = self = Genome.objects.get(id=self.id)
                     if not genotype_id:
                         genome.epoche += 1
+                        passed_epoches += 1
                         genome.epoches_since_improvement += 1
                         #type(self).objects.filter(id=self.id).update(epoche=self.epoche)
                         genome.set_production_genotype(save=False)
@@ -1601,18 +1681,21 @@ class Genome(BaseModel):
                 
                 Genome.objects.update()
                 genome = Genome.objects.get(id=self.id)
-                if not continuous or genome.stalled():
+                if max_epoches and passed_epoches >= max_epoches:
+                    break
+                elif not continuous or genome.stalled():
                     break
                 
                 # Clear the query cache to help reduce memory usage.
                 reset_queries()
         
         finally:
-            self.evolving = False
-            Genome.objects.filter(id=self.id).update(evolving=self.evolving)
-            settings.DEBUG = tmp_debug
-            #django.db.transaction.commit()
-            connection.close()
+            if pid0 == os.getpid():
+                self.evolving = False
+                Genome.objects.filter(id=self.id).update(evolving=self.evolving)
+                settings.DEBUG = tmp_debug
+                #django.db.transaction.commit()
+                connection.close()
         print 'Done.'
             
     def evaluate(self, genotype_id=None, force_reset=False, lock=None, fout=None, progress=None):
@@ -1636,7 +1719,7 @@ class Genome(BaseModel):
             
             # Retrieve the next genotype.
             try:
-                print 'lock:',lock
+                #print 'lock:',lock
                 if lock:
                     lock.acquire()
                 if q.exists():
@@ -1664,6 +1747,7 @@ class Genome(BaseModel):
                 gt.error = None # This may be overriden
                 gt.total_evaluation_seconds = None
                 self.evaluator_function(gt, force_reset=force_reset, progress=progress)
+                #print 'Done evaluating genotype %s.' % (gt.id,)
                 gt.fitness_evaluation_datetime = timezone.now()
                 gt.fresh = True # evaluated, even if failed
                 gt.evaluating = False
@@ -1698,6 +1782,7 @@ class Genome(BaseModel):
         if not self.production_genotype:
             print 'No production genotype set.'
             return False
+        progress = utils.MultiProgress(clear=False)
         prod_ready = self.is_production_ready()
         self.production_genotype.production_fresh = prod_ready
         self.production_genotype.save()
@@ -1721,7 +1806,22 @@ class Genome(BaseModel):
                         'Genome %i depends on genome %i which is not ready.' \
                             % (self.id, dep_genome.id)
                     return False
-        self.evaluator_function(genotype=self.production_genotype, test=False)
+        print 'Evaluating production genotype...'
+        #self.evaluator_function(genotype=self.production_genotype, test=False, progress=progress)
+        t = Thread(
+            target=self.evaluator_function,
+            kwargs=dict(
+                genotype=self.production_genotype,
+                test=False,
+                progress=progress,
+            ))
+        t.daemon = True
+        t.start()
+        while t.is_alive():
+            progress.pid = os.getpid()
+            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+            progress.flush()
+            time.sleep(1)
         prod_ready = self.is_production_ready()
         self.production_genotype.production_fresh = prod_ready
         self.production_genotype.save()
@@ -2743,7 +2843,10 @@ class Genotype(models.Model):
     
     def save(self, check_fingerprint=True, using=None, *args, **kwargs):
         
+        old = None
+        
         if self.id:
+            old = type(self).objects.get(id=self.id)
             
             self.gene_count = self.genes.all().count()
             
@@ -2774,7 +2877,11 @@ class Genotype(models.Model):
                 self.production_evaluation_end_datetime = timezone.now()
             
         super(Genotype, self).save(using=using, *args, **kwargs)
+        
+        if old and not old.fresh and self.fresh:
+            production_genotype_changed.send(sender=self, genome=self.genome)
     
+    #TODO:Remove? Deprecated due to inefficiency.
     @staticmethod
     def post_save(sender, instance, *args, **kwargs):
         self = instance
@@ -3077,12 +3184,12 @@ class GenotypeGene(BaseModel):
 
 #TODO:fix signals not being sent after inline parent saved
 def connect_signals():
-    signals.post_save.connect(Genotype.post_save, sender=Genotype)
+    #signals.post_save.connect(Genotype.post_save, sender=Genotype)
     signals.post_save.connect(GenotypeGene.post_save, sender=GenotypeGene)
     signals.post_delete.connect(GenotypeGene.post_delete, sender=GenotypeGene)
 
 def disconnect_signals():
-    signals.post_save.disconnect(Genotype.post_save, sender=Genotype)
+    #signals.post_save.disconnect(Genotype.post_save, sender=Genotype)
     signals.post_save.disconnect(GenotypeGene.post_save, sender=GenotypeGene)
     signals.post_delete.disconnect(GenotypeGene.post_delete, sender=GenotypeGene)
 

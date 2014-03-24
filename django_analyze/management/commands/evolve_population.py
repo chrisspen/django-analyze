@@ -19,6 +19,7 @@ class Command(BaseCommand):
         make_option('--genotype-id', default=0),
         make_option('--populate', action='store_true', default=False),
         make_option('--evaluate', action='store_true', default=False),
+        make_option('--epoches', default=0),
         make_option('--force-reset', action='store_true', default=False),
         make_option('--no-cleanup', action='store_true', default=False),
         make_option('--continuous', action='store_true', default=False),
@@ -61,6 +62,7 @@ class Command(BaseCommand):
             force_reset=force_reset,
             cleanup=not kwargs['no_cleanup'],
             continuous=kwargs['continuous'],
+            epoches=int(kwargs['epoches']),
             processes=int(kwargs['processes']),
         )
         

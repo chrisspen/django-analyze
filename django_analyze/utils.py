@@ -3,8 +3,9 @@ import random
 import sys
 import threading
 import time
+import errno
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict, OrderedDict
 from multiprocessing import Process, Queue, Lock, current_process
 
@@ -343,6 +344,45 @@ def weighted_samples(choices, k=1):
 
 UPDATE_TIMEOUT = '!UPDATE_TIMEOUT!'
 
+def pid_exists(pid):
+    """
+    Returns true if the process associated with the given PID is still running.
+    Returns false otherwise.
+    """
+    try:
+        pid = int(pid)
+    except ValueError:
+        return False
+    except TypeError:
+        return False
+    if pid < 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError, e:
+        return e.errno == errno.EPERM
+    else:
+        return True
+
+def calculate_eta(start_datetime, start_count, current_count, total_count):
+    """
+    Returns the datetime when the given process will likely complete, assuming
+    a relatively linear projection of the current progress.
+    """
+    assert isinstance(start_datetime, datetime)
+    assert start_count >= 0
+    assert current_count >= 0
+    assert total_count >= 0
+    now_datetime = datetime.now()
+    ran_parts = current_count - start_count
+    ran_seconds = (now_datetime - start_datetime).total_seconds()
+    remaining_parts = total_count - current_count - start_count
+    if not ran_parts:
+        return
+    remaining_seconds = ran_seconds/float(ran_parts)*remaining_parts
+    eta = now_datetime + timedelta(seconds=remaining_seconds)
+    return eta
+
 class MultiProgress(object):
     """
     Helper class for organizing progress reporting among multiple processes.
@@ -384,6 +424,7 @@ class MultiProgress(object):
         self.bar_length = 10
         self.pid_counts = {}
         self.refresh_period = 0.5
+        self.pid_start_times = {} # {pid:(start_datetime,start_current_count)}
         
         # Variables used for the child process.
         self.pid = None
@@ -451,6 +492,7 @@ class MultiProgress(object):
             # Load item from queue.
             pid, current, total, sub_current, sub_total, eta, sut, cpu, message = self.status.get()
             if message == UPDATE_TIMEOUT:
+                # Only update CPU and SUT.
                 new_sut = sut
                 new_cpu = cpu
                 (current, total, sub_current, sub_total, eta, sut, cpu, message) = (self.progress.get(pid) or (0, 0, 0, 0, None, None, None, ''))
@@ -459,6 +501,8 @@ class MultiProgress(object):
                 self.changed = True
             else:
                 data = (current, total, sub_current, sub_total, eta, sut, cpu, message)
+                if pid not in self.pid_start_times:
+                    self.pid_start_times[pid] = (datetime.now(), current)
                 if self.progress.get(pid) != data:
                     self.changed = True
                 if self.only_changes and not self.changed:
@@ -478,13 +522,33 @@ class MultiProgress(object):
             
             # Display each process line.
             for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in items:
-                eta = eta or '?'
+                
+                # If ETA not given, then attempt to calculate it.
+                eta = eta or calculate_eta(
+                    start_datetime=self.pid_start_times[pid][0],
+                    start_count=self.pid_start_times[pid][1],
+                    current_count=current,
+                    total_count=total,
+                ) or '?'
+                
                 sut = sut or '?'
-                cpu = '?' if cpu is None else cpu
+                
+                # If CPU not given, then attempt to calculate it.
+                if cpu is None:
+                    cpu = get_cpu_usage(pid=pid)
+                if cpu is None:
+                    cpu = '?'
+                    
                 sub_status = ''
-                if self.hide_complete and current is not None and total is not None and current >= total and pid in self.progress_done:
+                
+                # If the process completed, and we've already shown its last
+                # message, then don't show it anymore.
+                if not pid_exists(pid) and self.hide_complete \
+                and current is not None and total is not None \
+                and current >= total and pid in self.progress_done:
                     del self.progress[pid]
                     continue
+                
                 elif total:
                     self.pid_counts[pid] = (current, total)
                     percent = current/float(total)
@@ -509,17 +573,18 @@ class MultiProgress(object):
             self.last_progress_refresh = datetime.now()
         
         # Update job.
-        if not self.only_changes or (self.only_changes and self.changed):
-            overall_current_count = 0
-            overall_total_count = 0
-            for pid, (current, total) in self.pid_counts.iteritems():
-                overall_current_count += current
-                overall_total_count += total
-            if overall_total_count:
-                Job.update_progress(
-                    total_parts_complete=overall_current_count,
-                    total_parts=overall_total_count,
-                )
+        # NOTE: Don't do this, as it will conflict with user specified job update.
+#        if not self.only_changes or (self.only_changes and self.changed):
+#            overall_current_count = 0
+#            overall_total_count = 0
+#            for pid, (current, total) in self.pid_counts.iteritems():
+#                overall_current_count += current
+#                overall_total_count += total
+#            if overall_total_count:
+#                Job.update_progress(
+#                    total_parts_complete=overall_current_count,
+#                    total_parts=overall_total_count,
+#                )
                 
         self.changed = False
 
@@ -574,15 +639,15 @@ class ProcessFactory(object):
         total = self.has_pending_tasks()
         self.progress.pid = os.getpid()
         self.progress.total_count = total
+        self.progress.seconds_until_timeout = None
+        self.progress.eta = None
+        self.progress.sub_current = 0
+        self.progress.sub_total = 0
         while self.has_pending_tasks() or self.processes:
             if pid0 != os.getpid():
                 return
             
             self.progress.current_count = self.complete_parts
-            self.progress.sub_current = 0
-            self.progress.sub_total = 0
-            self.progress.seconds_until_timeout = None
-            self.progress.eta = None
             pid_str = ', '.join(str(_.pid) for _ in self.processes)
             self.progress.write(
                 'SUMMARY: %i running processes (%s) with %i pending tasks left.' \
