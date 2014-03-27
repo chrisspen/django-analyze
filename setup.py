@@ -13,7 +13,7 @@ def get_reqs():
         'django-materialized-views>=0.2.0',
         'django-admin-steroids>=0.1.13',
         
-        'psutil',
+        'psutil>=2.0.0',
         
         'numpy', # required by scikit-learn
         'scipy', # required by scikit-learn, takes a long time to build

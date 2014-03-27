@@ -1,3 +1,4 @@
+import os
 import sys
 import warnings
 
@@ -9,6 +10,7 @@ from django.core.management.base import BaseCommand, CommandError
 from optparse import make_option
 
 from django_analyze import models
+from django_analyze import utils
 
 safe_backends = ['django.core.cache.backends.locmem.LocMemCache']
 
@@ -27,6 +29,10 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
+        
+        if os.path.isfile(utils.WAIT_FOR_STALE_ERROR_FN):
+            os.remove(utils.WAIT_FOR_STALE_ERROR_FN)
+        
         ids = [int(_) for _ in args]
         q = models.Genome.objects.all().only('id')
         if ids:

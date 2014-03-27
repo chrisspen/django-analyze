@@ -1598,7 +1598,7 @@ class Genome(BaseModel):
 #                    else:
                         
                     # Start processes.
-                    progress = utils.MultiProgress(clear=False)
+                    progress = utils.MultiProgress(clear=1)
                     process_stack = []
                     lock = Lock()
                     if genotype_id:

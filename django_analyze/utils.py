@@ -2,6 +2,7 @@ import os
 import random
 import sys
 import threading
+import traceback
 import time
 import errno
 
@@ -10,6 +11,8 @@ from collections import defaultdict, OrderedDict
 from multiprocessing import Process, Queue, Lock, current_process
 
 import psutil
+
+WAIT_FOR_STALE_ERROR_FN = '/tmp/timedprocess_wait_until_finished_or_stale.txt'
 
 def is_power_of_two(x):
     return (x & (x - 1)) == 0
@@ -59,11 +62,14 @@ def get_cpu_usage(pid, recursive=True):
                 try:
                     times = child.get_cpu_times()
                     total += times.user + times.system
-                except psutil._error.NoSuchProcess:
+                except psutil.NoSuchProcess:
                     pass
-    except psutil._error.NoSuchProcess:
+    except psutil.NoSuchProcess:
         pass
     return total
+
+from ctypes import c_double
+from multiprocessing.sharedctypes import Value
 
 #TODO:extend the use of Process to distributed architextures?
 #http://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing/
@@ -112,6 +118,9 @@ class TimedProcess(Process):
         self._process_times = {} # {pid:user_seconds}
         self._last_duraction_seconds = None
         
+        # Create shared object for transmitting seconds-until-timeout value.
+        self._kwargs['sut'] = self.sut = Value('d', -1, lock=True)
+        
         # Number of seconds between status checks.
         self.wait_period = 5
         
@@ -123,6 +132,8 @@ class TimedProcess(Process):
         else:
             self.cpu_stall_penalty = cpu_stall_penalty
         self.total_cpu_stall_penalty = 0
+        
+        self._duration_seconds = 0
     
     def terminate(self, *args, **kwargs):
         if self.is_alive() and self._p:
@@ -185,6 +196,7 @@ class TimedProcess(Process):
         if ret is None:
             ret = self._last_duraction_seconds or 0
         ret += self.total_cpu_stall_penalty
+        self._duration_seconds = max(self._duration_seconds, ret)
         return ret
         
     @property
@@ -223,57 +235,92 @@ class TimedProcess(Process):
         Blocks until the unlying process exits or exceeds the predefined
         timeout threshold and is killed.
         """
-        pid0 = os.getpid()
-        fout = fout or self.fout
-        timeout = False
-        last_cpu_usage = None
-        if verbose:
-            print>>fout
-            print>>fout
-        while 1:
-            if pid0 != os.getpid():
-                print '~'*80
-                print 'Ending wait_until because pid stale:%s %s' % (pid0, os.getpid())
-                return
-            time.sleep(self.wait_period)
-            #assert isinstance(fout, MultiProgress), 'Fout is of type %s' % (type(fout),)
+        _stderr = sys.stderr
+        try:
+            # Set child with lowest possible priority.
+            #self._p.nice(15) # low priority, max lowest is 20
+            p = psutil.Process(self.pid)
+            p.nice(20)
+            #p.ionice(ioclass=psutil.IOPRIO_CLASS_IDLE, value=7)
+            p.ionice(ioclass=psutil.IOPRIO_CLASS_IDLE)
             
-            cpu_usage = get_cpu_usage(pid=self.pid)
-            #print last_cpu_usage,cpu_usage,last_cpu_usage == cpu_usage
-            if last_cpu_usage is not None and last_cpu_usage == cpu_usage:
-                #print 'adding penalty:',self.total_cpu_stall_penalty
-                self.total_cpu_stall_penalty += self.cpu_stall_penalty
-            last_cpu_usage = cpu_usage
+            # Redirect thread errors to separate file for easier review.
+            sys.stderr = open(WAIT_FOR_STALE_ERROR_FN, 'a')
             
-            if isinstance(fout, MultiProgress):
-                #fout.seconds_until_timeout = self.seconds_until_timeout
-                #print 'cpu_usage:',cpu_usage
-                fout.update_timeout(self.pid, sut=self.seconds_until_timeout, cpu=cpu_usage)
-            elif verbose:
-                msg = '%.0f seconds until timeout (target=%s, local=%s, verbose=%s).' \
-                    % (self.seconds_until_timeout, self.pid, pid0, verbose)
-                print msg
-                pass
-#                print>>fout, msg
-#                fout.flush()
-
-            if not self.is_alive():
-                break
-            elif self.is_expired:
-                if verbose:
-                    msg = 'Attempting to terminate expired process %s...' % (self.pid,)
-                    if isinstance(fout, MultiProgress):
-                        fout.write(msg)
-                    else:
-                        print>>fout
-                        print>>fout, msg
-                timeout = True
-                self.terminate()
-                break
-        self.t1 = time.clock()
-        self.t1_objective = time.time()
-        self.timeout = timeout
-        return timeout
+            pid0 = os.getpid()
+            fout = fout or self.fout
+            timeout = False
+            last_cpu_usage = None
+            if verbose:
+                print>>fout
+                print>>fout
+            sut = 1e9999999999999999
+            while 1:
+                
+                #TODO:remove
+#                import random
+#                if random.random() > 0.5:
+#                    raise Exception, 'Error: wait_until_finished_or_stale'
+                sut = min(sut, self.seconds_until_timeout)
+                
+                if pid0 != os.getpid():
+                    print '~'*80
+                    print 'Ending wait_until because pid stale:%s %s' % (pid0, os.getpid())
+                    return
+                time.sleep(self.wait_period)
+                #assert isinstance(fout, MultiProgress), 'Fout is of type %s' % (type(fout),)
+                
+                cpu_usage = get_cpu_usage(pid=self.pid)
+                #print last_cpu_usage,cpu_usage,last_cpu_usage == cpu_usage
+                if last_cpu_usage is not None and last_cpu_usage == cpu_usage:
+                    #print 'adding penalty:',self.total_cpu_stall_penalty
+                    self.total_cpu_stall_penalty += self.cpu_stall_penalty
+                last_cpu_usage = cpu_usage
+                
+                # Transmit seconds-until-timeout.
+                with self.sut.get_lock():
+                    self.sut.value = sut#self.seconds_until_timeout if self.seconds_until_timeout is not None else -1.0
+                
+                assert isinstance(fout, MultiProgress), 'Fout is of type %s' % (type(fout),)
+                if isinstance(fout, MultiProgress):
+                    #fout.seconds_until_timeout = self.seconds_until_timeout
+                    #print 'cpu_usage:',self.pid,cpu_usage
+                    #fout.show(('~'*80)+'\nself.pid:',self.pid,'os.getpid():',os.getpid(),'sut:',self.seconds_until_timeout,'\n'+('~'*80))
+                    fout.update_timeout(
+                        self.pid,
+                        sut=sut,
+                        cpu=cpu_usage)
+                elif verbose:
+                    msg = '%.0f seconds until timeout (target=%s, local=%s, verbose=%s).' \
+                        % (self.seconds_until_timeout, self.pid, pid0, verbose)
+                    print msg
+                    pass
+    #                print>>fout, msg
+    #                fout.flush()
+    
+                if not self.is_alive():
+                    break
+                #elif self.is_expired:
+                elif sut <= 0:
+                    if verbose:
+                        msg = 'Attempting to terminate expired process %s...' % (self.pid,)
+                        if isinstance(fout, MultiProgress):
+                            fout.write(msg)
+                        else:
+                            print>>fout
+                            print>>fout, msg
+                    timeout = True
+                    self.terminate()
+                    break
+            self.t1 = time.clock()
+            self.t1_objective = time.time()
+            self.timeout = timeout
+            return timeout
+        except Exception, e:
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+        finally:
+            sys.stderr = _stderr
 
 def weighted_choice(choices, get_total=None, get_weight=None):
     """
@@ -369,10 +416,12 @@ def calculate_eta(start_datetime, start_count, current_count, total_count):
     Returns the datetime when the given process will likely complete, assuming
     a relatively linear projection of the current progress.
     """
+    assert start_count >= 0, 'Invalid start_count: %s' % (start_count,)
+    assert current_count >= 0, 'Invalid current_count: %s' % (current_count,)
+    assert total_count >= 0, 'Invalid total_count: %s' % (total_count,)
     assert isinstance(start_datetime, datetime)
-    assert start_count >= 0
-    assert current_count >= 0
-    assert total_count >= 0
+    if not total_count:
+        return
     now_datetime = datetime.now()
     ran_parts = current_count - start_count
     ran_seconds = (now_datetime - start_datetime).total_seconds()
@@ -417,9 +466,11 @@ class MultiProgress(object):
             
         ), **kwargs)
         
+        self.lock = Lock()
         self.progress = OrderedDict()
         self.progress_done = set()
         self.status = Queue()
+        self.outgoing = {} # {pid:Queue()}
         self.last_progress_refresh = None
         self.bar_length = 10
         self.pid_counts = {}
@@ -436,9 +487,37 @@ class MultiProgress(object):
         self.eta = None
         self.cpu = None
         
+        self.to_children = {} # {parent_pid:[child_pid]}
+        self.to_parent = {} # {child_pid:parent_pid}
+        
         self.changed = True
     
-    def update_timeout(self, pid, sut, cpu):
+    def register_pid(self, pid):
+        if not pid_exists(pid):
+            if pid in self.to_children:
+                del self.to_children[pid]
+            if pid in self.to_parent:
+                del self.to_parent[pid]
+            return
+        p = psutil.Process(pid)
+        parent = p.parent()
+        if parent:
+            self.to_children.setdefault(parent.pid, set())
+            self.to_children[parent.pid].add(pid)
+            self.to_parent[pid] = parent.pid
+        children = p.get_children()
+        for child in children:
+            self.to_parent[child.pid] = pid
+    
+    def show(self, *args):
+        try:
+            self.lock.acquire()
+            s = ' '.join(map(str, args))
+            print s
+        finally:
+            self.lock.release()
+    
+    def update_timeout(self, pid, sut=None, cpu=None):
         """
         A specialized version of write() that updates the
         seconds_until_timeout value for a specific process,
@@ -482,27 +561,44 @@ class MultiProgress(object):
         This should only be called by the parent process.
         """
         from chroniker.models import Job
+        
         if self.last_progress_refresh and (datetime.now()-self.last_progress_refresh).seconds < self.refresh_period:
             return
         elif self.status.empty():
             return
         
+        change = False
         while not self.status.empty():
+            change = True
             
             # Load item from queue.
             pid, current, total, sub_current, sub_total, eta, sut, cpu, message = self.status.get()
+            (old_current, old_total, old_sub_current, old_sub_total, old_eta, old_sut, old_cpu, old_message) = (self.progress.get(pid) or (0, 0, 0, 0, None, None, None, ''))
+            
+            self.register_pid(pid=pid)
+            
+            # Prevent certain values from being reset.
+            if cpu is None:
+                cpu = old_cpu
+            if sut is None:
+                sut = old_sut
+            
+            if pid not in self.pid_start_times:
+                self.pid_start_times[pid] = (datetime.now(), current)
+                
             if message == UPDATE_TIMEOUT:
                 # Only update CPU and SUT.
-                new_sut = sut
-                new_cpu = cpu
-                (current, total, sub_current, sub_total, eta, sut, cpu, message) = (self.progress.get(pid) or (0, 0, 0, 0, None, None, None, ''))
-                data = (current, total, sub_current, sub_total, eta, new_sut, new_cpu, message)
+                current = old_current
+                total = old_total
+                sub_current = old_sub_current
+                sub_total = old_sub_total
+                eta = old_eta
+                message = old_message
+                data = (current, total, sub_current, sub_total, eta, sut, cpu, message)
                 self.progress[pid] = data
                 self.changed = True
             else:
                 data = (current, total, sub_current, sub_total, eta, sut, cpu, message)
-                if pid not in self.pid_start_times:
-                    self.pid_start_times[pid] = (datetime.now(), current)
                 if self.progress.get(pid) != data:
                     self.changed = True
                 if self.only_changes and not self.changed:
@@ -518,59 +614,139 @@ class MultiProgress(object):
                 items = self.progress.items()
             else:
                 # Only show the message we just received.
+                #items = self.progress.items()
                 items = [(pid, data)]
-            
-            # Display each process line.
-            for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in items:
-                
-                # If ETA not given, then attempt to calculate it.
-                eta = eta or calculate_eta(
-                    start_datetime=self.pid_start_times[pid][0],
-                    start_count=self.pid_start_times[pid][1],
-                    current_count=current,
-                    total_count=total,
-                ) or '?'
-                
-                sut = sut or '?'
-                
-                # If CPU not given, then attempt to calculate it.
-                if cpu is None:
-                    cpu = get_cpu_usage(pid=pid)
-                if cpu is None:
-                    cpu = '?'
+        
+        def cmp_pids(pid1, pid2):
+            """
+            Returns -1 if pid1 is parent of pid2.
+            Returns +1 if pid2 is parent of pid1.
+            Return 0 if pids are not directly related.
+            """
+#            parent1 = psutil.Process(pid1)
+#            ppid1 = None if parent1 is None else parent1.pid
+#            parent2 = psutil.Process(pid2)
+#            ppid2 = None if parent2 is None else parent2.pid
+#            if pid1 == ppid2:
+#                return -1
+#            elif pid2 == ppid1:
+#                return +1
+#            elif ppid1 == ppid2 and pid1 < pid2:
+#                return -1
+#            elif ppid1 == ppid2 and pid1 > pid2:
+#                return +1
+#            return 0
+            if pid1 == self.to_parent.get(pid2):
+                return -1
+            elif pid2 == self.to_parent.get(pid1):
+                return +1
+            return cmp(pid1, pid2)
+        
+        # Display each process line.
+        if change:
+            try:
+                self.lock.acquire()
+                #self.fout.write(('-'*80)+str(len(self.progress))+'\n')
+                last_pid = None
+                pid_stack = []
+                indent = 0
+                max_total = 0
+                max_sub_total = 0
+                max_sut = 0
+                for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in items:
+                    max_total = max(max_total, total)
+                    max_sub_total = max(max_sub_total, sub_total)
+                    max_sut = max(max_sut, sut)
+                for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in sorted(items, cmp=cmp_pids):
                     
-                sub_status = ''
-                
-                # If the process completed, and we've already shown its last
-                # message, then don't show it anymore.
-                if not pid_exists(pid) and self.hide_complete \
-                and current is not None and total is not None \
-                and current >= total and pid in self.progress_done:
-                    del self.progress[pid]
-                    continue
-                
-                elif total:
-                    self.pid_counts[pid] = (current, total)
-                    percent = current/float(total)
-                    bar = ('=' * int(percent * self.bar_length)).ljust(self.bar_length)
-                    percent = int(percent * 100)
-                else:
-                    percent = 0
-                    bar = ('=' * int(percent * self.bar_length)).ljust(self.bar_length)
-                    percent = '?'
-                    total = '?'
-                if sub_current and sub_total:
-                    sub_status = '(subtask %s of %s) ' % (sub_current, sub_total)
-                ts = ''
-                if self.show_timestamp:
-                    ts = '%s: ' % datetime.now()
-                self.fout.write(
-                    (('' if self.newline else '\r')+"%s%s [%s] %s of %s %s%s%% eta=%s sut=%s cpu=%s: %s"+('\n' if self.newline else '')) \
-                        % (ts, pid, bar, current, total, sub_status, percent, eta, sut, cpu, message))
-                if current >= total:
-                    self.progress_done.add(pid)
-            self.fout.flush()
-            self.last_progress_refresh = datetime.now()
+                    # If ETA not given, then attempt to calculate it.
+                    if pid in self.pid_start_times:
+                        start_datetime, start_count = self.pid_start_times[pid]
+                    else:
+                        start_datetime, start_count = datetime.now(), 0
+                        
+                    start_count = start_count or 0
+                    current = current or 0
+                    total = total or 0
+                    
+                    eta = eta or calculate_eta(
+                        start_datetime=start_datetime,
+                        start_count=start_count,
+                        current_count=current,
+                        total_count=total,
+                    )
+                    if eta:
+                        eta = eta.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        eta = '????-??-?? ??:??:??'
+                    
+                    # If CPU not given, then attempt to calculate it.
+                    if cpu is None:
+                        cpu = get_cpu_usage(pid=pid)
+                    if cpu is None:
+                        cpu = '???.??'
+                    else:
+                        cpu = '%06.2f' % (cpu,)
+                        
+                    sub_status = ''
+                    
+                    # If the process completed, and we've already shown its last
+                    # message, then don't show it anymore.
+                    if not pid_exists(pid) and self.hide_complete \
+                    and current is not None and total is not None \
+                    and current >= total and pid in self.progress_done:
+                        del self.progress[pid]
+                        continue
+                    
+                    elif total:
+                        self.pid_counts[pid] = (current, total)
+                        percent = current/float(total)
+                        bar = ('=' * int(percent * self.bar_length)).ljust(self.bar_length)
+                        percent = int(percent * 100)
+                    else:
+                        percent = 0
+                        bar = ('=' * int(percent * self.bar_length)).ljust(self.bar_length)
+                        #percent = '?'
+                        #total = '?'
+                    if sub_current and sub_total:
+                        sub_status = '(subtask %s of %s) ' % (sub_current, sub_total)
+                        
+                    ts = ''
+                    if self.show_timestamp:
+                        ts = '%s ' % datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        
+                    #alive = pid_exists(pid)
+                    try:
+                        alive = True
+                        p = psutil.Process(pid)
+                    except psutil.NoSuchProcess:
+                        alive = False
+                        continue
+                    parent = p.parent()
+                    if parent is not None:
+                        parent = parent.pid
+                        
+                    if sut is None or sut == float('inf'):
+                        sut = '?'*len(str(max_sut))
+                    else:
+                        sut = ("%0"+str(len(str(max_sut)))+"i") % sut
+                    
+                    template = "%s%s->%s %0"+str(len(str(max_total)))+"i of %0"+str(len(str(max_total)))+"i %s%03.0f%% eta=%s sut=%s cpu=%s: %s"
+                    #print template
+                    data = (ts, parent, pid, current, total, sub_status, percent, int(alive), eta, sut, cpu, message)
+                    #print data
+                    self.fout.write(
+                        (('' if self.newline else '\r')+template+('\n' if self.newline else '')) \
+                            % data)
+                    if current >= total:
+                        self.progress_done.add(pid)
+                        
+                    last_pid = pid
+                self.fout.flush()
+                self.last_progress_refresh = datetime.now()
+            
+            finally:
+                self.lock.release()
         
         # Update job.
         # NOTE: Don't do this, as it will conflict with user specified job update.
