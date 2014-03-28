@@ -731,13 +731,25 @@ class MultiProgress(object):
                     else:
                         sut = ("%0"+str(len(str(max_sut)))+"i") % sut
                     
-                    template = "%s%s->%s %0"+str(len(str(max_total)))+"i of %0"+str(len(str(max_total)))+"i %s%03.0f%% eta=%s sut=%s cpu=%s: %s"
-                    #print template
-                    data = (ts, parent, pid, current, total, sub_status, percent, int(alive), eta, sut, cpu, message)
-                    #print data
-                    self.fout.write(
-                        (('' if self.newline else '\r')+template+('\n' if self.newline else '')) \
-                            % data)
+                    template = "{start}{ts}{parent}->{child} {current:0"+str(len(str(max_total)))+"d} of {total:0"+str(len(str(max_total)))+"d} {sub_status}{percent:03.0f}%% eta={eta} sut={sut} cpu={cpu}: {message}{end}"
+#                    print template
+                    data = dict(
+                        start=('' if self.newline else '\r'),
+                        ts=ts,
+                        parent=parent,
+                        child=pid,
+                        current=current,
+                        total=total,
+                        sub_status=sub_status,
+                        percent=percent,
+                        eta=eta,
+                        sut=sut,
+                        cpu=cpu,
+                        message=message,
+                        end=('\n' if self.newline else ''),
+                    )
+#                    print data
+                    self.fout.write(template.format(**data))
                     if current >= total:
                         self.progress_done.add(pid)
                         
