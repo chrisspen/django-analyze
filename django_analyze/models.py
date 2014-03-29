@@ -1542,6 +1542,7 @@ class Genome(BaseModel):
         settings.DEBUG = False
         pid0 = os.getpid()
         max_epoches = epoches
+        print 'max epoches:',max_epoches
         passed_epoches = 0
         try:
             self.evolving = True
@@ -1691,13 +1692,16 @@ class Genome(BaseModel):
                     genome.evolving = True
                     genome.save()
                 else:
+                    print 'Stopping because evaluation not selected.'
                     return
                 
                 Genome.objects.update()
                 genome = Genome.objects.get(id=self.id)
                 if max_epoches and passed_epoches >= max_epoches:
+                    print 'Stopping because we have completed %s epoches out of %s max epoches.' % (passed_epoches, max_epoches)
                     break
                 elif not continuous or genome.stalled():
+                    print 'Stopping because genome has stalled.'
                     break
                 
                 # Clear the query cache to help reduce memory usage.
