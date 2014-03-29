@@ -499,15 +499,18 @@ class MultiProgress(object):
             if pid in self.to_parent:
                 del self.to_parent[pid]
             return
-        p = psutil.Process(pid)
-        parent = p.parent()
-        if parent:
-            self.to_children.setdefault(parent.pid, set())
-            self.to_children[parent.pid].add(pid)
-            self.to_parent[pid] = parent.pid
-        children = p.get_children()
-        for child in children:
-            self.to_parent[child.pid] = pid
+        try:
+            p = psutil.Process(pid)
+            parent = p.parent()
+            if parent:
+                self.to_children.setdefault(parent.pid, set())
+                self.to_children[parent.pid].add(pid)
+                self.to_parent[pid] = parent.pid
+            children = p.get_children()
+            for child in children:
+                self.to_parent[child.pid] = pid
+        except psutil.NoSuchProcess:
+            pass
     
     def show(self, *args):
         try:
@@ -568,6 +571,7 @@ class MultiProgress(object):
             return
         
         change = False
+        items = []
         while not self.status.empty():
             change = True
             
@@ -643,7 +647,7 @@ class MultiProgress(object):
             return cmp(pid1, pid2)
         
         # Display each process line.
-        if change:
+        if change and items:
             try:
                 self.lock.acquire()
                 #self.fout.write(('-'*80)+str(len(self.progress))+'\n')

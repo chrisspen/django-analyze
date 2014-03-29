@@ -566,6 +566,12 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'production_evaluation_seconds_str',
     ]
     
+    def get_readonly_fields(self, request, obj=None):
+        lst = list(self.readonly_fields)
+        if not obj:
+            lst.remove('genome')
+        return lst
+    
 #    exclude = (
 #        'fresh',
 #    )

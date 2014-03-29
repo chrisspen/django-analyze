@@ -559,6 +559,9 @@ _evaluators = {}
 _modeladmin_extenders = {}
 
 def get_evaluator_name(cls):
+    if hasattr(cls, '_meta'):
+        # Use Django's logic module name if one given.
+        return cls._meta.app_label + '.' + cls.__name__
     return cls.__module__ + '.' + cls.__name__
 
 def register_evaluator(cls):
@@ -1435,7 +1438,10 @@ class Genome(BaseModel):
     
     @property
     def is_production_ready_function(self):
-        return _evaluators.get(self.evaluator).is_production_ready_genotype
+        obj = _evaluators.get(self.evaluator)
+        if not obj:
+            return (lambda *args, **kwargs: False)
+        return obj.is_production_ready_genotype
     
     @property
     def calculate_fitness_function(self):
@@ -1552,6 +1558,16 @@ class Genome(BaseModel):
                 self.genotypes.filter(evaluating=True)\
                     .update(evaluating=False, evaluating_pid=None)
                 
+                # Add missing genes to genotypes.
+                if cleanup:
+                    print 'Adding missing genes...'
+                    self.add_missing_genes()
+                    
+                # Ensure all genotypes have a valid fingerprint.
+                if cleanup:
+                    self.freshen_fingerprints()
+                #return
+                    
                 # Delete genotypes that are incomplete or duplicates.
                 if cleanup:
                     print 'Deleting corrupt genotypes...'
@@ -1579,11 +1595,6 @@ class Genome(BaseModel):
                     self.populate()
                 else:
                     print 'Skipping population.'
-                
-                # Add missing genes to genotypes.
-                if cleanup:
-                    print 'Adding missing genes...'
-                    self.add_missing_genes()
                 
                 # Ensure all genotypes have a valid fingerprint.
                 if cleanup:
@@ -1669,6 +1680,9 @@ class Genome(BaseModel):
                     Genome.objects.update()
                     genome = self = Genome.objects.get(id=self.id)
                     if not genotype_id:
+                        q = Epoche.objects.filter(index=genome.epoche, genome=genome)
+                        if q.exists():
+                            q[0].save(force_recalc=True)
                         genome.epoche += 1
                         passed_epoches += 1
                         genome.epoches_since_improvement += 1
@@ -1870,8 +1884,12 @@ class Epoche(BaseModel):
     def save(self, force_recalc=False, *args, **kwargs):
         if self.id and (force_recalc or self.genome.epoche == self.index):
             
-            q = self.genotypes.filter(fitness__isnull=False).exclude(fitness=float('nan'))\
-                .aggregate(Max('fitness'), Min('fitness'), Avg('fitness'))
+            q = self.genotypes.filter(
+                fitness__isnull=False, epoche_of_evaluation=self.index
+            ).exclude(
+                fitness=float('nan')
+            ).aggregate(
+                Max('fitness'), Min('fitness'), Avg('fitness'))
             self.max_fitness = q['fitness__max']
             self.mean_fitness = q['fitness__avg']
             self.min_fitness = q['fitness__min']
@@ -2411,7 +2429,7 @@ class Genotype(models.Model):
     
     #DEPRECATED, use epoche instead
     epoche_of_evaluation = models.PositiveIntegerField(
-        verbose_name=' EOF',
+        verbose_name=' EOE',
         blank=True,
         null=True,
         editable=False,
