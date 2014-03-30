@@ -1425,27 +1425,36 @@ class Genome(BaseModel):
             connection.close()
     
     @property
+    def evaluator_cls(self):
+        name = self.evaluator
+        name = name.replace('.models.', '.')
+        cls = _evaluators.get(name)
+        if cls is None:
+            raise Exception, 'Could not find class for evaluator %s' % (self.evaluator,)
+        return cls
+    
+    @property
     def evaluator_function(self):
-        return _evaluators.get(self.evaluator).evaluate_genotype
+        return self.evaluator_cls.evaluate_genotype
     
     @property
     def mark_stale_function(self):
-        return _evaluators.get(self.evaluator).mark_stale_genotype
+        return self.evaluator_cls.mark_stale_genotype
     
     @property
     def reset_function(self):
-        return _evaluators.get(self.evaluator).reset_genotype
+        return self.evaluator_cls.reset_genotype
     
     @property
     def is_production_ready_function(self):
-        obj = _evaluators.get(self.evaluator)
+        obj = self.evaluator_cls
         if not obj:
             return (lambda *args, **kwargs: False)
         return obj.is_production_ready_genotype
     
     @property
     def calculate_fitness_function(self):
-        return _evaluators.get(self.evaluator).calculate_genotype_fitness
+        return self.evaluator_cls.calculate_genotype_fitness
     
     def add_missing_genes(self, genotype=None, save=True):
         """
@@ -1727,10 +1736,10 @@ class Genome(BaseModel):
             
             # Build query to retrieve next genotype to evaluate.
             if force_reset:
-                print>>fout, 'Retrieving all genotypes...'
+                #print>>fout, 'Retrieving all genotypes...'
                 q = self.genotypes.all()
             else:
-                print>>fout, 'Retrieving pending genotypes...'
+                #print>>fout, 'Retrieving pending genotypes...'
                 q = self.pending_genotypes
             if genotype_id:
                 q = q.filter(id=genotype_id)

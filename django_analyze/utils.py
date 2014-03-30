@@ -14,6 +14,12 @@ import psutil
 
 WAIT_FOR_STALE_ERROR_FN = '/tmp/timedprocess_wait_until_finished_or_stale.txt'
 
+def get_stdout_fn(pid):
+    return '/tmp/%i.out' % pid
+
+def get_stderr_fn(pid):
+    return '/tmp/%i.err' % pid
+
 def is_power_of_two(x):
     return (x & (x - 1)) == 0
 
@@ -285,6 +291,7 @@ class TimedProcess(Process):
                 if isinstance(fout, MultiProgress):
                     #fout.seconds_until_timeout = self.seconds_until_timeout
                     #print 'cpu_usage:',self.pid,cpu_usage
+                    #print 'sut for pid %s is %s' % (self.pid, sut)
                     #fout.show(('~'*80)+'\nself.pid:',self.pid,'os.getpid():',os.getpid(),'sut:',self.seconds_until_timeout,'\n'+('~'*80))
                     fout.update_timeout(
                         self.pid,
@@ -611,9 +618,6 @@ class MultiProgress(object):
             
             # Prepare screen.
             if self.clear:
-                self.fout.write('\033[2J\033[H') #clear screen
-                if self.title:
-                    self.fout.write('%s\n' % self.title)
                 # Show last progress message from all processes.
                 items = self.progress.items()
             else:
@@ -661,6 +665,10 @@ class MultiProgress(object):
                     max_total = max(max_total, total)
                     max_sub_total = max(max_sub_total, sub_total)
                     max_sut = max(max_sut, sut)
+                if self.clear:
+                    self.fout.write('\033[2J\033[H') #clear screen
+                    if self.title:
+                        self.fout.write('%s\n' % self.title)
                 for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in sorted(items, cmp=cmp_pids):
                     
                     # If ETA not given, then attempt to calculate it.

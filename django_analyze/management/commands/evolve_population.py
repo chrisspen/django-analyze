@@ -18,7 +18,7 @@ class Command(BaseCommand):
     args = '<genome ids>'
     help = 'Manages the genetic evolution of one or more genomes.'
     option_list = BaseCommand.option_list + (
-        make_option('--genotype-id', default=0),
+        make_option('--genotype', default=0),
         make_option('--populate', action='store_true', default=False),
         make_option('--evaluate', action='store_true', default=False),
         make_option('--epoches', default=0),
@@ -37,8 +37,8 @@ class Command(BaseCommand):
         q = models.Genome.objects.all().only('id')
         if ids:
             q = q.filter(id__in=ids)
-        genotype_id = int(options.get('genotype_id', 0))
-        del options['genotype_id']
+        genotype_id = int(options.get('genotype', 0))
+        del options['genotype']
         if genotype_id:
             q = q.filter(genotypes__id=genotype_id)
         total = q.count()

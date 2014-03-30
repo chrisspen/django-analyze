@@ -11,7 +11,7 @@ class Command(BaseCommand):
     args = '<genome ids>'
     help = 'Deletes and adds gene values from genotypes based on gene rules.'
     option_list = BaseCommand.option_list + (
-        make_option('--genotype-id', default=0),
+        make_option('--genotype', default=0),
     )
 
     def handle(self, *args, **options):
@@ -19,8 +19,8 @@ class Command(BaseCommand):
         q = models.Genome.objects.all()
         if ids:
             q = q.filter(id__in=ids)
-        genotype_id = int(options.get('genotype_id', 0))
-        del options['genotype_id']
+        genotype_id = int(options.get('genotype', 0))
+        del options['genotype']
         if genotype_id:
             q = q.filter(genotypes__id=genotype_id)
             
