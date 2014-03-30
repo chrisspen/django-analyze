@@ -60,13 +60,13 @@ def get_cpu_usage(pid, recursive=True):
     total = 0
     try:
         p = psutil.Process(pid)
-        times = p.get_cpu_times()
+        times = p.cpu_times()
         total = times.user + times.system
         if recursive:
-            children = list(p.get_children(recursive=True))
+            children = list(p.children(recursive=True))
             for child in children:
                 try:
-                    times = child.get_cpu_times()
+                    times = child.cpu_times()
                     total += times.user + times.system
                 except psutil.NoSuchProcess:
                     pass
@@ -145,12 +145,12 @@ class TimedProcess(Process):
         if self.is_alive() and self._p:
             # Explicitly kill children since the default terminate() doesn't
             # seem to do this very reliably.
-            for child in self._p.get_children():
+            for child in self._p.children():
                 # Do one last time check.
-                self._process_times[child.pid] = child.get_cpu_times().user
+                self._process_times[child.pid] = child.cpu_times().user
                 os.system('kill -9 %i' % (child.pid,))
             # Sum final time.
-            self._process_times[self._p.pid] = self._p.get_cpu_times().user
+            self._process_times[self._p.pid] = self._p.cpu_times().user
             self._last_duraction_seconds = sum(self._process_times.itervalues())
         return super(TimedProcess, self).terminate(*args, **kwargs)
     
@@ -184,11 +184,11 @@ class TimedProcess(Process):
                         # Note, we must store historical child times because child
                         # processes may die, causing them to no longer be included in
                         # future calculations, possibly corrupting the total time.
-                        times = self._p.get_cpu_times()
+                        times = self._p.cpu_times()
                         self._process_times[self._p.pid] = times.user + times.system
-                        children = self._p.get_children(recursive=True)
+                        children = self._p.children(recursive=True)
                         for child in children:
-                            times = child.get_cpu_times()
+                            times = child.cpu_times()
                             self._process_times[child.pid] = times.user + times.system
                         #TODO:optimize by storing total sum and tracking incremental changes?
                         self._last_duraction_seconds = sum(self._process_times.itervalues())
@@ -513,7 +513,7 @@ class MultiProgress(object):
                 self.to_children.setdefault(parent.pid, set())
                 self.to_children[parent.pid].add(pid)
                 self.to_parent[pid] = parent.pid
-            children = p.get_children()
+            children = p.children()
             for child in children:
                 self.to_parent[child.pid] = pid
         except psutil.NoSuchProcess:

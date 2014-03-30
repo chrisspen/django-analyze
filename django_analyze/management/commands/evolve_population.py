@@ -20,10 +20,12 @@ class Command(BaseCommand):
     option_list = BaseCommand.option_list + (
         make_option('--genotype', default=0),
         make_option('--populate', action='store_true', default=False),
+        make_option('--population', default=0),
         make_option('--evaluate', action='store_true', default=False),
         make_option('--epoches', default=0),
         make_option('--force-reset', action='store_true', default=False),
         make_option('--no-cleanup', action='store_true', default=False),
+        make_option('--no-clear', action='store_true', default=False),
         make_option('--continuous', action='store_true', default=False),
         make_option('--processes', default=8, help='The number of processes to use for evaluating.'),
     )
@@ -59,15 +61,18 @@ class Command(BaseCommand):
         populate = kwargs['populate']
         evaluate = kwargs['evaluate']
         force_reset = kwargs['force_reset']
+        population = int(kwargs['population'])
         genome = models.Genome.objects.get(id=genome_id)
         print 'Evolving genome %s.' % (genome.name,)
         genome.evolve(
             genotype_id=genotype_id,
             populate=populate,
+            population=population,
             evaluate=evaluate,
             force_reset=force_reset,
             cleanup=not kwargs['no_cleanup'],
             continuous=kwargs['continuous'],
+            clear=not kwargs['no_clear'],
             epoches=int(kwargs['epoches']),
             processes=int(kwargs['processes']),
         )

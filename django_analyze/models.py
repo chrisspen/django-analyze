@@ -1308,7 +1308,7 @@ class Genome(BaseModel):
                 print 'Deleting genotype %i because it conflicts.' % (genotype.id,)
                 genotype.delete()
     
-    def populate(self):
+    def populate(self, population=0):
         """
         Creates random genotypes until the maximum limit for un-evaluated
         genotypes is reached.
@@ -1317,6 +1317,7 @@ class Genome(BaseModel):
         last_pending = None
         populate_count = 0
         max_populate_retries = 10
+        maximum_population = population or self.maximum_population
         print 'Populating genotypes...'
         transaction.enter_transaction_management()
         transaction.managed(True)
@@ -1329,7 +1330,7 @@ class Genome(BaseModel):
                 #TODO:only look at fitness__isnull=True if maximum_population=0 or delete_inferiors=False?
                 #pending = self.pending_genotypes.count()
                 pending = self.genotypes.all().count()
-                if pending >= self.maximum_population:
+                if pending >= maximum_population:
                     print 'Maximum unevaluated population has been reached.'
                     break
                 
@@ -1531,11 +1532,13 @@ class Genome(BaseModel):
     def evolve(self,
         genotype_id=None,
         populate=True,
+        population=0,
         evaluate=True,
         epoches=0,
         force_reset=False,
         continuous=False,
         cleanup=True,
+        clear=True,
         processes=1):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
@@ -1602,7 +1605,7 @@ class Genome(BaseModel):
                 # results in gene loss.
                 if populate:
                     print 'Populating...'
-                    self.populate()
+                    self.populate(population=population)
                 else:
                     print 'Skipping population.'
                 
@@ -1619,7 +1622,7 @@ class Genome(BaseModel):
 #                    else:
                         
                     # Start processes.
-                    progress = utils.MultiProgress(clear=1)
+                    progress = utils.MultiProgress(clear=clear)
                     process_stack = []
                     lock = Lock()
                     if genotype_id:
