@@ -797,6 +797,10 @@ class GeneStatisticsAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_ster
         'gene',
     )
     
+    search_fields = (
+        'gene__name',
+    )
+    
     actions = (
         'refresh',
     )

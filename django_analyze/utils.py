@@ -734,9 +734,13 @@ class MultiProgress(object):
                     except psutil.NoSuchProcess:
                         alive = False
                         continue
-                    parent = p.parent()
-                    if parent is not None:
-                        parent = parent.pid
+                    
+                    try:
+                        parent = p.parent()
+                        if parent is not None:
+                            parent = parent.pid
+                    except psutil.NoSuchProcess:
+                        parent = None
                         
                     if sut is None or sut == float('inf'):
                         sut = '?'*len(str(max_sut))

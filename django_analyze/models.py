@@ -22,6 +22,7 @@ from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, DatabaseError, connection, reset_queries, transaction
+from django.db.transaction import commit_on_success
 from django.db.models import Avg, Sum, Count, Max, Min, Q, F
 from django.db.utils import IntegrityError
 from django.utils import timezone
@@ -690,6 +691,60 @@ def handle_production_genotype_change(sender, genome, **kwargs):
     Genotype.objects.filter(genome__id__in=q)\
         .update(fresh=False, production_fresh=False)
 
+class GenomeBackendMixin(object):
+    """
+    Defines standard methods that must or may be implemented
+    by a genome backend.
+    """
+    
+    @classmethod
+    def reset_genotype(cls, genotype):
+        """
+        Called immediately before the genotype is evaluated
+        in each epoche.
+        
+        Implementation optional.
+        """
+        
+    @classmethod
+    def pre_delete_genotype(cls, genotype, fout=None):
+        """
+        Called before the genotype is deleted.
+        This allows us time to incrementally delete any linked data
+        records, which might otherwise consume all system memory
+        if we tried to delete them in a single large transaction.
+        
+        Implementation optional.
+        """
+
+    @classmethod
+    def mark_stale_genotype(cls, genotype_qs):
+        """
+        Bulk updates any data associated with the given genotype queryset
+        as stale.
+        
+        Implementation optional.
+        """
+    
+    @classmethod
+    def is_production_ready_genotype(cls, genotype):
+        """
+        Returns true if the given genotype can be used for production
+        prediction tasks.
+        
+        Implementation REQUIRED.
+        """
+        raise NotImplementedError
+    
+    @classmethod
+    def evaluate_genotype(cls, genotype, test=True, force_reset=False, progress=None):
+        """
+        Calculates the given genotype's fitness.
+        
+        Implementation REQUIRED.
+        """
+        raise NotImplementedError
+
 class Genome(BaseModel):
     """
     All possible parameters of a problem domain.
@@ -716,7 +771,7 @@ class Genome(BaseModel):
     evolving = models.BooleanField(
         default=False,
         db_index=True,
-        help_text=_('If true, indicates these genome is currently being evaluated.'))
+        help_text=_('If true, indicates this genome is currently being evaluated.'))
     
     evolution_start_datetime = models.DateTimeField(
         blank=True,
@@ -1447,6 +1502,10 @@ class Genome(BaseModel):
         return self.evaluator_cls.reset_genotype
     
     @property
+    def pre_delete_function(self):
+        return self.evaluator_cls.pre_delete_genotype_genotype
+    
+    @property
     def is_production_ready_function(self):
         obj = self.evaluator_cls
         if not obj:
@@ -1484,6 +1543,7 @@ class Genome(BaseModel):
                 missing.create()
         Genotype.mark_stale(genotype_ids, save=save)
     
+    @commit_on_success
     def delete_worst_genotypes(self):
         """
         Deletes all but the best genotypes.
@@ -1506,6 +1566,7 @@ class Genome(BaseModel):
             print '\rDeleting genotype %i (%i of %i %.02f%%)...' \
                 % (gt.id, i, total, i/float(total)*100),
             sys.stdout.flush()
+            self.pre_delete_function(gt)
             gt.delete()
         print
     
@@ -1627,55 +1688,63 @@ class Genome(BaseModel):
                     lock = Lock()
                     if genotype_id:
                         processes = 1
-                    for _ in xrange(processes):
-                        django.db.connection.close()
-                        p = Process(
-                            target=self.evaluate,
-                            kwargs=dict(
-                                lock=lock,
-                                progress=progress,
-                                genotype_id=genotype_id,
-                                force_reset=force_reset,
-                            ))
-                        #p.daemon = True#breaks evaluate() launching processes of its own
-                        p.start()
-                        process_stack.append(p)
-                        
-                    # Wait for processes to end.
-                    while any(p for p in process_stack if p.is_alive()):
-                        
-                        alive = [p for p in process_stack if p.is_alive()]
-                        
-                        Genotype.objects.update()
-                        q = Genotype.objects.filter(genome__id=self.id)
-                        if genotype_id:
-                            q = q.filter(id=int(genotype_id))
-                        overall_total_count = q.count()
-                        overall_current_count = q.filter(fresh=True).count()
-#                        from chroniker.models import get_current_heartbeat
-#                        hb = get_current_heartbeat()
-#                        print '!'*80
-#                        import thread
-#                        thread_ident = thread.get_ident()
-#                        print 'thread0:',thread_ident
-#                        print 'job_id0:',hb.job_id
-#                        print 'pid0:',os.getpid()
-#                        print 'total_parts0:',overall_total_count
-#                        print 'total_parts_complete0:',overall_current_count
-#                        print '!'*80
-                        Job.update_progress(
-                            total_parts_complete=overall_current_count,
-                            total_parts=overall_total_count,
+                    if processes == 1:
+                        self.evaluate(
+                            lock=lock,
+                            progress=progress,
+                            genotype_id=genotype_id,
+                            force_reset=force_reset,
                         )
-                        progress.pid = os.getpid()#'EVOLVE'
-                        progress.cpu = utils.get_cpu_usage(pid=os.getpid())
-                        progress.seconds_until_timeout = 1e999999999999999
-                        progress.current_count = overall_current_count
-                        progress.total_count = overall_total_count
-                        progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
-                        progress.flush()
-                        
-                        time.sleep(1)
+                    else:
+                        for _ in xrange(processes):
+                            django.db.connection.close()
+                            p = Process(
+                                target=self.evaluate,
+                                kwargs=dict(
+                                    lock=lock,
+                                    progress=progress,
+                                    genotype_id=genotype_id,
+                                    force_reset=force_reset,
+                                ))
+                            #p.daemon = True#breaks evaluate() launching processes of its own
+                            p.start()
+                            process_stack.append(p)
+                            
+                        # Wait for processes to end.
+                        while any(p for p in process_stack if p.is_alive()):
+                            
+                            alive = [p for p in process_stack if p.is_alive()]
+                            
+                            Genotype.objects.update()
+                            q = Genotype.objects.filter(genome__id=self.id)
+                            if genotype_id:
+                                q = q.filter(id=int(genotype_id))
+                            overall_total_count = q.count()
+                            overall_current_count = q.filter(fresh=True).count()
+    #                        from chroniker.models import get_current_heartbeat
+    #                        hb = get_current_heartbeat()
+    #                        print '!'*80
+    #                        import thread
+    #                        thread_ident = thread.get_ident()
+    #                        print 'thread0:',thread_ident
+    #                        print 'job_id0:',hb.job_id
+    #                        print 'pid0:',os.getpid()
+    #                        print 'total_parts0:',overall_total_count
+    #                        print 'total_parts_complete0:',overall_current_count
+    #                        print '!'*80
+                            Job.update_progress(
+                                total_parts_complete=overall_current_count,
+                                total_parts=overall_total_count,
+                            )
+                            progress.pid = os.getpid()#'EVOLVE'
+                            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+                            progress.seconds_until_timeout = 1e999999999999999
+                            progress.current_count = overall_current_count
+                            progress.total_count = overall_total_count
+                            progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
+                            progress.flush()
+                            
+                            time.sleep(1)
                     
                     # Make final update.
                     Genotype.objects.update()
@@ -1709,9 +1778,10 @@ class Genome(BaseModel):
                 
                 Genome.objects.update()
                 genome = Genome.objects.get(id=self.id)
-                if max_epoches and passed_epoches >= max_epoches:
-                    print 'Stopping because we have completed %s epoches out of %s max epoches.' % (passed_epoches, max_epoches)
-                    break
+                if max_epoches:
+                    if passed_epoches >= max_epoches:
+                        print 'Stopping because we have completed %s epoches out of %s max epoches.' % (passed_epoches, max_epoches)
+                        break
                 elif not continuous or genome.stalled():
                     print 'Stopping because genome has stalled.'
                     break
@@ -1775,9 +1845,13 @@ class Genome(BaseModel):
             # Run the backend evaluator.
             try:
                 gt.error = None # This may be overriden
-                gt.total_evaluation_seconds = None
+                fitness_evaluation_datetime_start = timezone.now()
                 self.evaluator_function(gt, force_reset=force_reset, progress=progress)
                 #print 'Done evaluating genotype %s.' % (gt.id,)
+                gt = Genotype.objects.get(id=gt.id)
+                print 'final fitness:',gt.fitness
+                gt.total_evaluation_seconds = None
+                gt.fitness_evaluation_datetime_start = fitness_evaluation_datetime_start
                 gt.fitness_evaluation_datetime = timezone.now()
                 gt.fresh = True # evaluated, even if failed
                 gt.evaluating = False
