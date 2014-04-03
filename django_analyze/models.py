@@ -1503,7 +1503,7 @@ class Genome(BaseModel):
     
     @property
     def pre_delete_function(self):
-        return self.evaluator_cls.pre_delete_genotype_genotype
+        return self.evaluator_cls.pre_delete_genotype
     
     @property
     def is_production_ready_function(self):
