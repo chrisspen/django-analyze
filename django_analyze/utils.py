@@ -499,6 +499,17 @@ class MultiProgress(object):
         
         self.changed = True
     
+    def reinit(self):
+        if self.pid != os.getpid():
+            self.pid = os.getpid()
+            self.current_count = 0
+            self.total_count = 0
+            self.sub_current = 0
+            self.sub_total = 0
+            self.seconds_until_timeout = None
+            self.eta = None
+            self.cpu = None
+    
     def register_pid(self, pid):
         if not pid_exists(pid):
             if pid in self.to_children:
@@ -565,21 +576,30 @@ class MultiProgress(object):
         ])
         time.sleep(0.01)
     
-    def flush(self):
+    def flush(self, force=True):
         """
         Displays all output from all processes in an ordered list.
         This should only be called by the parent process.
         """
         from chroniker.models import Job
         
-        if self.last_progress_refresh and (datetime.now()-self.last_progress_refresh).seconds < self.refresh_period:
-            return
-        elif self.status.empty():
-            return
+        if not force:
+            if self.last_progress_refresh and (datetime.now()-self.last_progress_refresh).seconds < self.refresh_period:
+                return
+            elif self.status.empty():
+                return
         
         change = False
         items = []
-        while not self.status.empty():
+        start_readtime = datetime.now()
+        # Read until the queue is empty or until we timeout (in case processes
+        # are writing to the queue faster than we can clear it).
+        #TODO:how should we handle queue items we don't get to?
+        #option1: if we clear them, we risk losing notices from procesess
+        #option2: if we don't clear them, we risk a memory leak where our queue grows unrestricted and never gets cleared
+        #option3: warn user that queue is growing too fast, implying that processes are logging too much data, and should be changed to be less verbose
+        while not self.status.empty() and start_readtime > (datetime.now() - timedelta(seconds=1)):
+            #print 'reading status queue'
             change = True
             
             # Load item from queue.
@@ -650,10 +670,17 @@ class MultiProgress(object):
                 return +1
             return cmp(pid1, pid2)
         
+        if force:
+            change = True
+            if self.clear:
+                items = self.progress.items()
+        
         # Display each process line.
         if change and items:
             try:
+#                print 'acquiring lock'
                 self.lock.acquire()
+#                print 'lock acquired'
                 #self.fout.write(('-'*80)+str(len(self.progress))+'\n')
                 last_pid = None
                 pid_stack = []
@@ -669,7 +696,10 @@ class MultiProgress(object):
                     self.fout.write('\033[2J\033[H') #clear screen
                     if self.title:
                         self.fout.write('%s\n' % self.title)
-                for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in sorted(items, cmp=cmp_pids):
+#                print 'sorting items'
+                items = sorted(items, cmp=cmp_pids)
+#                print 'showing items'
+                for pid, (current, total, sub_current, sub_total, eta, sut, cpu, message) in items:
                     
                     # If ETA not given, then attempt to calculate it.
                     if pid in self.pid_start_times:
@@ -747,7 +777,7 @@ class MultiProgress(object):
                     else:
                         sut = ("%0"+str(len(str(max_sut)))+"i") % sut
                     
-                    template = "{start}{ts}{parent}->{child} {current:0"+str(len(str(max_total)))+"d} of {total:0"+str(len(str(max_total)))+"d} {sub_status}{percent:03.0f}%% eta={eta} sut={sut} cpu={cpu}: {message}{end}"
+                    template = "{start}{ts}{parent}->{child} {current:0"+str(len(str(max_total)))+"d} of {total:0"+str(len(str(max_total)))+"d} {sub_status}{percent:03.0f}% eta={eta} sut={sut} cpu={cpu}: {message}{end}"
 #                    print template
                     data = dict(
                         start=('' if self.newline else '\r'),

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib
 from collections import defaultdict
 from threading import Thread
 
@@ -953,6 +954,12 @@ class Genome(BaseModel):
         #help_text=_('?'),
     )
     
+    error_report = models.TextField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('A summary of unhandled exceptions encountered while evaluating genotypes.'))
+    
     class Meta:
         app_label = APP_LABEL
         verbose_name = _('genome')
@@ -964,6 +971,32 @@ class Genome(BaseModel):
     def natural_key(self):
         return (self.name,)
     natural_key.dependencies = []
+    
+    def generate_error_report(self, force=False, save=True):
+        if not force and self.error_report:
+            return
+        error_pattern = re.compile('[a-zA-Z0-9]+: [^\n]+')
+        error_counts = defaultdict(int)
+        for gt in self.genotypes.filter(error__isnull=False).exclude(error='').only('id').iterator():
+            error = (gt.error or '').strip()
+            matches = error_pattern.findall(error)
+            if matches:
+                error_counts[matches[-1]] += 1
+        if error_counts:
+            report = ['<table><tr><th>Count</th><th>Error</th></tr>']
+            for error, count in sorted(error_counts.iteritems(), key=lambda o:o[1], reverse=True):
+                url_params = urllib.urlencode(dict(genome=self.id, error__icontains=error))
+                kwargs = dict(
+                    count=count,
+                    error=error,
+                    url='/admin/django_analyze/genotype/?%s' % url_params)
+                report.append('<tr><td>{count}</td><td><a href="{url}" target="_blank">{error}</a></td></tr>'.format(**kwargs))
+            report.append('</table>')
+            self.error_report = ''.join(report)
+        else:
+            self.error_report = 'No errors found.'
+        if save:
+            self.save()
     
     def create_blank_genotype(self, generation=1):
         """
@@ -1712,7 +1745,6 @@ class Genome(BaseModel):
                             
                         # Wait for processes to end.
                         while any(p for p in process_stack if p.is_alive()):
-                            
                             alive = [p for p in process_stack if p.is_alive()]
                             
                             Genotype.objects.update()
@@ -1742,7 +1774,7 @@ class Genome(BaseModel):
                             progress.current_count = overall_current_count
                             progress.total_count = overall_total_count
                             progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
-                            progress.flush()
+                            progress.flush(force=True)
                             
                             time.sleep(1)
                     
@@ -1761,6 +1793,8 @@ class Genome(BaseModel):
                     # Reload the current genome in case we've received updates.
                     Genome.objects.update()
                     genome = self = Genome.objects.get(id=self.id)
+                    genome.generate_error_report(force=True, save=False)
+                    genome.genotypes.filter(evaluating=True).update(evaluating=False)
                     if not genotype_id:
                         q = Epoche.objects.filter(index=genome.epoche, genome=genome)
                         if q.exists():
@@ -1804,7 +1838,8 @@ class Genome(BaseModel):
         using the genome's linked fitness metric.
         """
         fout = fout or sys.stdout
-        
+        if isinstance(fout, utils.MultiProgress):
+            fout.pid = os.getpid()
         while 1:
             
             # Build query to retrieve next genotype to evaluate.
@@ -1836,7 +1871,7 @@ class Genome(BaseModel):
 #                        # that it conflicts without the fingerprint flag being
 #                        # marked stale. In this case, when we do to save it,
                 else:
-                    print 'Nothing left to evaluate.'
+                    print>>fout, 'Nothing left to evaluate.'
                     return
             finally:
                 if lock:
@@ -1847,9 +1882,9 @@ class Genome(BaseModel):
                 gt.error = None # This may be overriden
                 fitness_evaluation_datetime_start = timezone.now()
                 self.evaluator_function(gt, force_reset=force_reset, progress=progress)
-                #print 'Done evaluating genotype %s.' % (gt.id,)
+                print>>fout, 'Done evaluating genotype %s.' % (gt.id,)
                 gt = Genotype.objects.get(id=gt.id)
-                print 'final fitness:',gt.fitness
+                print>>fout, 'final fitness: %s' % (gt.fitness,)
                 gt.total_evaluation_seconds = None
                 gt.fitness_evaluation_datetime_start = fitness_evaluation_datetime_start
                 gt.fitness_evaluation_datetime = timezone.now()
@@ -1873,6 +1908,8 @@ class Genome(BaseModel):
                     fresh=True,
                     valid=False,
                     error=error,
+                    evaluating=False,
+                    evaluating_pid=None,
                 )
                 
             if genotype_id:

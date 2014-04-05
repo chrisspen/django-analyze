@@ -247,6 +247,7 @@ class GenomeAdmin(BaseModelAdmin):
         'evolution_start_datetime',
         'production_at_best',
         'is_production_ready',
+        'error_report_str',
         
         'total_genotype_count',
         'pending_genotype_count',
@@ -288,6 +289,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'max_fitness',
                 'evaluating_part',
                 'ratio_evaluated',
+                'error_report_str',
             )
         }),
         ('Production', {
@@ -312,6 +314,16 @@ class GenomeAdmin(BaseModelAdmin):
             )
         }),
     )
+    
+    def error_report_str(self, obj=None):
+        try:
+            if not obj or not obj.error_report:
+                return ''
+            return obj.error_report
+        except Exception, e:
+            return str(e)
+    error_report_str.short_description = 'error report'
+    error_report_str.allow_tags = True
     
     def organize_species(self, request, queryset):
         i = 0

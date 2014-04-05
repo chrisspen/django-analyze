@@ -39,12 +39,12 @@ def timeout(seconds=10, error_message=os.strerror(errno.ETIME)):
 
     return decorator
 
-class timeout2(object):
+class run_until_timeout(object):
     """
     Allows to interrupt a function call by a specific timeout threshold.
     To be used in a with statement:
     
-        with timeout2(seconds=3):
+        with run_until_timeout(seconds=3):
             sleep(4)
             
     """
@@ -54,9 +54,11 @@ class timeout2(object):
     def handle_timeout(self, signum, frame):
         raise TimeoutError(self.error_message)
     def __enter__(self):
-        signal.signal(signal.SIGALRM, self.handle_timeout)
-        signal.alarm(self.seconds)
+        if self.seconds > 0:
+            signal.signal(signal.SIGALRM, self.handle_timeout)
+            signal.alarm(self.seconds)
     def __exit__(self, type, value, traceback):
         # Cancel alarm.
-        signal.alarm(0)
+        if self.seconds > 0:
+            signal.alarm(0)
         
