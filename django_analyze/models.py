@@ -369,7 +369,15 @@ class Predictor(BaseModel, MaterializedView):
         blank=True,
         null=True,
         editable=False,
+        db_index=True,
         help_text='The accuracy of the classifier predicting its training input.')
+    
+    testing_accuracy = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        help_text='The accuracy of the classifier predicting its testing input.')
     
     min_training_accuracy = models.FloatField(
         blank=True,
@@ -2523,7 +2531,7 @@ class Genotype(models.Model):
         editable=False,
         verbose_name=_('evaluation stop time'))
     
-    mean_evaluation_seconds = models.PositiveIntegerField(
+    mean_evaluation_seconds = models.FloatField(
         blank=True,
         null=True,
         editable=False)
@@ -2543,6 +2551,13 @@ class Genotype(models.Model):
         help_text=_('''The mean-absolute-error measure recorded during
             fitness evaluation.'''))
     
+    accuracy = models.FloatField(
+        blank=True,
+        null=True,
+        db_index=True,
+        editable=False,
+        help_text=_('''Boolean accuracy, if the domain supports it.'''))
+    
     gene_count = models.PositiveIntegerField(
         verbose_name='genes',
         blank=True,
@@ -2556,12 +2571,20 @@ class Genotype(models.Model):
     
     #DEPRECATED, use epoche instead
     epoche_of_evaluation = models.PositiveIntegerField(
-        verbose_name=' EOE',
+        verbose_name=_(' EOE'),
         blank=True,
         null=True,
         editable=False,
         db_index=True,
         help_text=_('The epoche when this genotype was last evaluated.'))
+    
+    epoche_of_creation = models.PositiveIntegerField(
+        verbose_name=_(' EOC'),
+        blank=True,
+        null=True,
+        editable=False,
+        db_index=True,
+        help_text=_('The epoche when this genotype was created.'))
     
     epoche = models.ForeignKey(
         'Epoche',
@@ -2990,6 +3013,9 @@ class Genotype(models.Model):
         
         old = None
         
+        if self.epoche_of_creation is None:
+            self.epoche_of_creation = self.genome.epoche
+        
         if self.id:
             old = type(self).objects.get(id=self.id)
             
@@ -3065,6 +3091,7 @@ class Genotype(models.Model):
             total_evaluation_seconds=None,
             mean_evaluation_seconds=None,
             mean_absolute_error=None,
+            accuracy=None,
             fitness_evaluation_datetime_start=None,
             fitness_evaluation_datetime=None,
             evaluating=False,
