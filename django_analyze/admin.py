@@ -598,23 +598,23 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 #    )
     
     actions = (
-        'refresh',
         'check_fingerprint',
-        'reset',
-        'mark_stale',
         'mark_fresh',
+        'mark_stale',
+#        'refresh',
         'refresh_fitness',
+        'reset',
     )
     
-    def refresh(self, request, queryset):
-        i = 0
-        for obj in queryset.iterator():
-            i += 1
-            obj.fresh = False
-            obj.save()
-        messages.success(request, '%i genotypes were refreshed.' % i)
-        return HttpResponseRedirect(request.META['HTTP_REFERER'])
-    refresh.short_description = 'Refresh selected %(verbose_name_plural)s'
+#    def refresh(self, request, queryset):
+#        i = 0
+#        for obj in queryset.iterator():
+#            i += 1
+#            obj.fresh = False
+#            obj.save()
+#        messages.success(request, '%i genotypes were refreshed.' % i)
+#        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+#    refresh.short_description = 'Refresh selected %(verbose_name_plural)s'
     
     def reset(self, request, queryset):
         i = 0
