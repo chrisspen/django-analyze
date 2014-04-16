@@ -1387,6 +1387,8 @@ class Genome(BaseModel):
     
     def freshen_fingerprints(self):
         """
+        Genome
+        
         Attempts to calculate or re-calculate the fingerprint for all genotypes
         that either don't have one or have one marked as stale.
         Any genotype that is found to be in conflict will be deleted.
@@ -1582,6 +1584,9 @@ class Genome(BaseModel):
             for missing in q.iterator():
                 genotype_ids.add(missing.genotype_id)
                 missing.create()
+            print '\rAdding gene value %i of %i...' % (total, total),
+            print
+            sys.stdout.flush()
         Genotype.mark_stale(genotype_ids, save=save)
     
     @commit_on_success
@@ -1631,6 +1636,23 @@ class Genome(BaseModel):
         if save:
             self.save()
     
+    def cleanup(self):
+        """
+        If the genome is edited or altered, this may cause
+        genotypes to become broken in some way.
+        This attempts to fix some common problems caused by adding, removing,
+        or editing gene values to existing genotypes.
+        """
+        
+        print 'Adding missing genes...'
+        self.add_missing_genes()
+        
+        print 'Freshening fingerprints...'
+        self.freshen_fingerprints()
+        
+        print 'Deleting corrupt genotypes...'
+        self.delete_corrupt()
+    
     def evolve(self,
         genotype_id=None,
         populate=True,
@@ -1673,20 +1695,8 @@ class Genome(BaseModel):
                 self.genotypes.filter(evaluating=True)\
                     .update(evaluating=False, evaluating_pid=None)
                 
-                # Add missing genes to genotypes.
                 if cleanup:
-                    print 'Adding missing genes...'
-                    self.add_missing_genes()
-                    
-                # Ensure all genotypes have a valid fingerprint.
-                if cleanup:
-                    self.freshen_fingerprints()
-                #return
-                    
-                # Delete genotypes that are incomplete or duplicates.
-                if cleanup:
-                    print 'Deleting corrupt genotypes...'
-                    self.delete_corrupt()
+                    self.cleanup()
                     
                 # Only cycle epoches if we've completely evaluated all
                 # genotypes in the previous epoche.
@@ -1708,21 +1718,16 @@ class Genome(BaseModel):
                 if populate:
                     print 'Populating...'
                     self.populate(population=population)
+                    
+                    # Ensure all new genotypes have a valid fingerprint.
+                    if cleanup:
+                        self.cleanup()
                 else:
                     print 'Skipping population.'
                 
-                # Ensure all genotypes have a valid fingerprint.
-                if cleanup:
-                    self.freshen_fingerprints()
-                
                 # Evaluate un-evaluated genotypes.
-                #max_fitness = self.max_fitness
                 if evaluate:
-#                    if genotype_id:
-#                        self.evaluate(genotype_id=genotype_id, force_reset=force_reset)
-#                        return
-#                    else:
-                        
+                    
                     # Start processes.
                     progress = utils.MultiProgress(clear=clear)
                     process_stack = []
@@ -1945,6 +1950,7 @@ class Genome(BaseModel):
 #            return False
         if prod_ready:
             # Don't evaluate if there's nothing to do.
+            print 'Genome is ready.'
             return True
         elif dep_genomes:
             for dep_genome in dep_genomes:
@@ -1976,7 +1982,15 @@ class Genome(BaseModel):
         self.production_genotype.save()
         return prod_ready
 
+class EpocheManager(models.Manager):
+    
+    def get_by_natural_key(self, index, *args, **kwargs):
+        genome = Genome.objects.get_by_natural_key(*args, **kwargs)
+        return self.get_or_create(index=index, genome=genome)[0]
+
 class Epoche(BaseModel):
+    
+    objects = EpocheManager()
     
     genome = models.ForeignKey(Genome, related_name='epoches')
     
@@ -2015,7 +2029,13 @@ class Epoche(BaseModel):
             ('genome', 'index'),
         )
         ordering = ('genome', '-index')
-        
+    
+    natural_key_fields = ('index', 'genome')
+    
+    def natural_key(self):
+        return (self.index,) + self.genome.natural_key()
+    natural_key.dependencies = ['genome']
+    
     def save(self, force_recalc=False, *args, **kwargs):
         if self.id and (force_recalc or self.genome.epoche == self.index):
             
@@ -2048,6 +2068,7 @@ class GeneStatistics(BaseModel):
         editable=False,
         blank=False,
         null=False,
+        on_delete=models.DO_NOTHING,
         related_name='gene_statistics',
         db_column='genome_id')
     
@@ -2056,6 +2077,7 @@ class GeneStatistics(BaseModel):
         editable=False,
         blank=False,
         null=False,
+        on_delete=models.DO_NOTHING,
         db_column='gene_id')
     
     value = models.CharField(
@@ -2354,9 +2376,36 @@ class Gene(BaseModel):
         self.update_mutation_weight(auto_update=auto_update)
     
     def save(self, *args, **kwargs):
+        old = None
         if self.id:
+            old = type(self).objects.get(id=self.id)
             self.update_coverage(auto_update=False)
         super(Gene, self).save(*args, **kwargs)
+        
+        if old:
+            old_values_list = old.get_values_list(as_text=True)
+            values_list = self.get_values_list(as_text=True)
+            if old_values_list != values_list:
+                # Mark stale any genotype that was using a gene value
+                # that was removed.
+                # Needs to happen before the gene value reset, otherwise this
+                # won't find anything.
+                q = self.genome.genotypes.exclude(
+                    genes__gene=self,
+                    genes___value__in=values_list
+                )
+                print 'Marking %i genotypes as having a stale fingerprint.' % (q.count(),)
+                q.update(fingerprint_fresh=False)
+                # Set genotype gene value to the default if they're using
+                # a now-illegal value.
+                q = GenotypeGene.objects.filter(
+                    genotype__genome=self.genome, gene=self
+                ).exclude(_value__in=values_list)
+                cnt = q.count()
+                print 'Found %i genotype genes using illegal values.' % (cnt,)
+                if cnt:
+                    print 'Setting %i genotype genes to the default value.' % (cnt,)
+                    q.update(_value=self.default)
     
     def get_max_value_count(self):
         """
@@ -2423,7 +2472,7 @@ class Gene(BaseModel):
             return self.get_random_value()
         return str_to_type[self.type](self.default)
     
-    def get_values_list(self):
+    def get_values_list(self, as_text=False):
         """
         Returns a list of allowable values for this gene.
         If gene value starts with "source:package.module.attribute", will dynamically lookup this list.
@@ -2440,6 +2489,8 @@ class Gene(BaseModel):
         else:
             lst = values.replace('\n', ',').split(',')
         assert isinstance(lst, (tuple, list))
+        if as_text:
+            return lst
         return [str_to_type[self.type](_) for _ in lst]
 
 class GenotypeManager(models.Manager):
@@ -2876,6 +2927,8 @@ class Genotype(models.Model):
     @classmethod
     def freshen_fingerprints(cls):
         """
+        Genotype.
+        
         Recalculates the fingerprint for all genotypes with a stale
         fingerprint.
         """
@@ -3315,9 +3368,13 @@ class GenotypeGene(BaseModel):
                 if self.gene.values:
                     values = self.gene.get_values_list()
                     if value not in values:
-                        raise ValidationError({'_value': 'Value must be one of %s, not %s' % (', '.join(map(str, values)), repr(value))})
+                        raise ValidationError({
+                            '_value': ['Value must be one of %s, not %s.' % (', '.join(map(str, values)), repr(value))],
+                        })
             except ValueError:
-                raise ValidationError({'_value': 'Value must be of type %s.' % self.gene.type})
+                raise ValidationError({
+                    '_value': ['Value must be of type %s.' % self.gene.type],
+                })
         
         super(GenotypeGene, self).clean(*args, **kwargs)
         

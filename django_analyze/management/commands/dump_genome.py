@@ -38,7 +38,11 @@ class Command(BaseCommand):
             json_str = json_str.strip()[1:-1].strip()
             return json_str
         
+        # Genomes.
         queries.append(models.Genome.objects.filter(id=genome_id))
+        
+        # Epoches.
+        queries.append(models.Epoche.objects.filter(genome__id=genome_id))
         
         # Genes.
         queries.append(models.Gene.objects.filter(genome__id=genome_id))
@@ -46,7 +50,7 @@ class Command(BaseCommand):
         # Species.
         queries.append(models.Species.objects.filter(genome__id=genome_id))
         
-        if options['exclude_genotypes']:
+        if not options['exclude_genotypes']:
             
             # Genotypes.
             queries.append(models.Genotype.objects.filter(

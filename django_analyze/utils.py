@@ -5,6 +5,7 @@ import threading
 import traceback
 import time
 import errno
+import warnings
 
 from datetime import datetime, timedelta
 from collections import defaultdict, OrderedDict
@@ -644,6 +645,12 @@ class MultiProgress(object):
                 # Only show the message we just received.
                 #items = self.progress.items()
                 items = [(pid, data)]
+        
+        if not self.status.empty():
+            warnings.warn('Unable to clear status queue in alotted time. '\
+                'This may mean processes are writing to the queue faster '\
+                'than we can read from it. Ensure your processes are not '\
+                'being excessively verbose.')
         
         def cmp_pids(pid1, pid2):
             """

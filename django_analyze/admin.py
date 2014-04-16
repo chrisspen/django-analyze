@@ -163,6 +163,8 @@ class GeneAdmin(BaseModelAdmin):
     
     list_filter = (
         'type',
+        ('dependee_gene', NullListFilter),
+        ('dependencies', NullListFilter),
     )
     
     readonly_fields = (
@@ -522,6 +524,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'immortal',
         ('fitness', NullListFilter),
         ('fingerprint', NullListFilter),
+        'fingerprint_fresh',
     )
     
     search_fields = (
