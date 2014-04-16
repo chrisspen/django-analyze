@@ -1301,8 +1301,8 @@ class Genome(BaseModel):
         
         ggenes = genotype.genes.order_by('-gene__dependee_gene__id')
         ggene_count = ggenes.count()
-        ggene_weights = dict((ggene, ggene.gene.mutation_weight or 0) for ggene in ggenes.iterator())
-        ggene_weights_sum = sum(ggene.gene.mutation_weight or 0 for ggene in ggenes.iterator())
+        ggene_weights = dict((ggene, max(ggene.gene.mutation_weight or 0, 0)) for ggene in ggenes.iterator())
+        ggene_weights_sum = sum(max(ggene.gene.mutation_weight or 0, 0) for ggene in ggenes.iterator())
         
         # Randomly select K elements and add weight then do weighted selection.
         k = max(1, int(round(self.mutation_rate * ggene_count, 0)))

@@ -347,7 +347,10 @@ def weighted_choice(choices, get_total=None, get_weight=None):
             time, and then pass in a custom iterator that lazily looks up the
             item's weight. Depending on your distribution, this should
             consume much less memory than loading all items immediately.
-            
+    
+    Note, this assumes all weights are >= 0.0.
+    Negative weights may throw an exception.
+    
     """
     
     def get_iter():
@@ -357,8 +360,6 @@ def weighted_choice(choices, get_total=None, get_weight=None):
             
     if callable(get_total):
         total = get_total()
-#        print '-'*80
-#        print 'total:',total
     else:
         total = sum(w for c, w in get_iter())
     
@@ -373,6 +374,8 @@ def weighted_choice(choices, get_total=None, get_weight=None):
             w = get_weight(c)
         else:
             c, w = c
+        if w < 0:
+            raise Exception, 'Invalid negative weight: %s' % (w,)
         if upto + w >= r:
             return c
         upto += w
