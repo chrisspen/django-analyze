@@ -1570,7 +1570,7 @@ class Genome(BaseModel):
         Find all genotype gene values that should exist but don't,
         and creates them.
         """
-        genotype_ids = set()
+        _genotype_ids = set()
         q = GenotypeGeneMissing.objects.filter(genotype__genome=self)
         if genotype:
             q = q.filter(genotype=genotype)
@@ -1585,17 +1585,17 @@ class Genome(BaseModel):
                 if not i % 10:
                     print '\rAdding gene value %i of %i...' % (i, total),
                     sys.stdout.flush()
-                genotype_ids.add(missing.genotype_id)
+                _genotype_ids.add(missing.genotype_id)
                 missing.create()
             # Check a second time in case we added a dependee gene
             # which should now catch any missing dependent genes.
             for missing in q.iterator():
-                genotype_ids.add(missing.genotype_id)
+                _genotype_ids.add(missing.genotype_id)
                 missing.create()
             print '\rAdding gene value %i of %i...' % (total, total),
             print
             sys.stdout.flush()
-        Genotype.mark_stale(genotype_ids, save=save)
+        Genotype.mark_stale(_genotype_ids, save=save)
     
     @commit_on_success
     def delete_worst_genotypes(self):
