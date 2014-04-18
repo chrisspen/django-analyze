@@ -2268,21 +2268,21 @@ class Gene(BaseModel):
         default='',
         blank=True)
     
-    dependee_gene = models.ForeignKey(
-        'self',
-        related_name='dependent_genes',
-        blank=True,
-        null=True,
-        on_delete=models.SET_NULL,
-        help_text='''The gene this gene is dependent upon. This gene will only
-            activate when the dependee gene has a certain value.''')
-    
-    dependee_value = models.CharField(
-        max_length=1000,
-        blank=True,
-        null=True,
-        help_text='''The value of the dependee gene that activates
-            this gene.''')
+#    dependee_gene = models.ForeignKey(
+#        'self',
+#        related_name='dependent_genes',
+#        blank=True,
+#        null=True,
+#        on_delete=models.SET_NULL,
+#        help_text='''The gene this gene is dependent upon. This gene will only
+#            activate when the dependee gene has a certain value.''')
+#    
+#    dependee_value = models.CharField(
+#        max_length=1000,
+#        blank=True,
+#        null=True,
+#        help_text='''The value of the dependee gene that activates
+#            this gene.''')
     
     type = models.CharField(
         choices=c.GENE_TYPE_CHOICES,
@@ -2371,7 +2371,7 @@ class Gene(BaseModel):
             ('genome', 'name'),
         )
         ordering = (
-            '-dependee_gene__id',
+#            '-dependee_gene__id',
             'name',
         )
         
@@ -3258,15 +3258,15 @@ class GenotypeGeneMissing(BaseModel):
         max_length=1000,
         editable=False)
     
-    dependee_gene = models.ForeignKey(
-        'Gene',
-        db_column='dependee_gene_id',
-        related_name='missing_dependents',
-        primary_key=True,
-        blank=False,
-        null=False,
-        editable=False,
-        on_delete=models.DO_NOTHING)
+#    dependee_gene = models.ForeignKey(
+#        'Gene',
+#        db_column='dependee_gene_id',
+#        related_name='missing_dependents',
+#        primary_key=True,
+#        blank=False,
+#        null=False,
+#        editable=False,
+#        on_delete=models.DO_NOTHING)
     
     default = models.CharField(
         max_length=1000,

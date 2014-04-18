@@ -121,7 +121,7 @@ class GeneInline(
     )
     
     raw_id_fields = (
-        'dependee_gene',
+#        'dependee_gene',
     )
 
 class GeneDependencyInline(
@@ -144,8 +144,8 @@ class GeneAdmin(BaseModelAdmin):
         'type',
         'values_str',
         'default',
-        'dependee_gene',
-        'dependee_value',
+#        'dependee_gene',
+#        'dependee_value',
         'coverage_ratio',
         'exploration_priority',
         'mutation_weight',
@@ -153,7 +153,7 @@ class GeneAdmin(BaseModelAdmin):
     
     raw_id_fields = (
         'genome',
-        'dependee_gene',
+#        'dependee_gene',
     )
     
     search_fields = (
@@ -163,7 +163,7 @@ class GeneAdmin(BaseModelAdmin):
     
     list_filter = (
         'type',
-        ('dependee_gene', NullListFilter),
+#        ('dependee_gene', NullListFilter),
         ('dependencies', NullListFilter),
     )
     
