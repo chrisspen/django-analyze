@@ -882,6 +882,12 @@ class Genome(BaseModel):
     invalid_genotype_count.short_description = 'invalid genotypes'
     
     def stalled(self):
+        #TODO:change to look at epoche model?
+        #e.g. if last N epoches have same oldest_epoche_of_creation, then
+        #that implies progress has stalled
+        #e.g. if oldest_epoche_of_creation has changed, but mean_fitness
+        # is the same, that implies no convergence and that the evaluation
+        # method is not comprehensive
         return self.epoches_since_improvement >= self.epoche_stall
     stalled.boolean = True
     
@@ -1737,7 +1743,7 @@ class Genome(BaseModel):
                     if processes == 1:
                         self.evaluate(
                             lock=lock,
-                            progress=progress,
+                            #progress=progress,
                             genotype_id=genotype_id,
                             force_reset=force_reset,
                         )
@@ -2020,6 +2026,12 @@ class Epoche(BaseModel):
         db_index=True,
         help_text=_('The largest observed fitness.'))
     
+    oldest_epoche_of_creation = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('The oldest EOC of any non-immortal genotype.'))
+    
     def __unicode__(self):
         return unicode(self.index)
     
@@ -2039,15 +2051,30 @@ class Epoche(BaseModel):
     def save(self, force_recalc=False, *args, **kwargs):
         if self.id and (force_recalc or self.genome.epoche == self.index):
             
-            q = self.genotypes.filter(
+            q0 = self.genotypes.filter(
                 fitness__isnull=False, epoche_of_evaluation=self.index
             ).exclude(
                 fitness=float('nan')
-            ).aggregate(
-                Max('fitness'), Min('fitness'), Avg('fitness'))
+            )
+            
+            q = q0.aggregate(
+                Max('fitness'),
+                Min('fitness'),
+                Avg('fitness'),
+                Max('epoche_of_creation'),
+            )
             self.max_fitness = q['fitness__max']
             self.mean_fitness = q['fitness__avg']
             self.min_fitness = q['fitness__min']
+            
+            q = q0.filter(
+                # Note, we have to exclude immortals, otherwise they'd always
+                # show up as the oldest, and we're only interested in tracking
+                # the naturally-occurring oldest, not the ones we explicitly
+                # made be the oldest.
+                immortal=False
+            ).aggregate(Max('epoche_of_creation'))
+            self.oldest_epoche_of_creation = q['epoche_of_creation__max']
             
         super(Epoche, self).save(*args, **kwargs)
 
@@ -2246,6 +2273,7 @@ class Gene(BaseModel):
         related_name='dependent_genes',
         blank=True,
         null=True,
+        on_delete=models.SET_NULL,
         help_text='''The gene this gene is dependent upon. This gene will only
             activate when the dependee gene has a certain value.''')
     
@@ -3112,7 +3140,16 @@ class Genotype(models.Model):
         self.genome.save()
     
     def getattr(self, name):
-        return self.genes.filter(gene__name=name)[0].value
+        q = self.genes.filter(gene__name=name)
+        if q.exists():
+            return q[0].value
+        q = self.genome.genes.filter(name=name)
+        if q.exists():
+            raise Exception, ('Gene "%s" exists on the genome, but has not '\
+                'been set for genotype %s.') % (name, self.id)
+        else:
+            raise Exception, \
+                'No gene "%s" exists in genome %s.' % (name, self.id)
         
     def as_dict(self):
         return dict((gene.gene.name, gene.value) for gene in self.genes.all())

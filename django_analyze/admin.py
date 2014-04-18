@@ -540,6 +540,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     readonly_fields = [
         'id',
         'genome',
+        'genome_link',
         'status',
         'fitness',
         'species',
@@ -681,12 +682,22 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 #    def __init__(self, *args, **kwargs):
 #        super(GenotypeAdmin, self).__init__(*args, **kwargs)
     
+    def genome_link(self, obj=None):
+        if not obj:
+            return ''
+        return view_link(obj.genome)
+    genome_link.short_description = 'genome'
+    genome_link.allow_tags = True
+    
     def get_fieldsets(self, request, obj=None):
+        
+        genome_field = 'genome_link' if obj else 'genome'
+        
         fieldsets = [
             (None, {
                 'fields': [
                     'id',
-                    'genome',
+                    genome_field,
                     'immortal',
                     'genes_link',
                 ]
@@ -787,6 +798,7 @@ class EpocheAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.Rea
         'min_fitness',
         'mean_fitness',
         'max_fitness',
+        'oldest_epoche_of_creation',
     )
     
     raw_id_fields = (
