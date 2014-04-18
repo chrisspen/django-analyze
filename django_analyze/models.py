@@ -1565,7 +1565,7 @@ class Genome(BaseModel):
     def calculate_fitness_function(self):
         return self.evaluator_cls.calculate_genotype_fitness
     
-    def add_missing_genes(self, genotype=None, save=True):
+    def add_missing_genes(self, genotype=None, save=True, genotype_ids=[]):
         """
         Find all genotype gene values that should exist but don't,
         and creates them.
@@ -1574,6 +1574,8 @@ class Genome(BaseModel):
         q = GenotypeGeneMissing.objects.filter(genotype__genome=self)
         if genotype:
             q = q.filter(genotype=genotype)
+        if genotype_ids:
+            q = q.filter(genotype__id__in=genotype_ids)
         total = q.count()
         if total:
             print 'Adding %i missing gene values.' % (total,)
@@ -1642,7 +1644,7 @@ class Genome(BaseModel):
         if save:
             self.save()
     
-    def cleanup(self):
+    def cleanup(self, genotype_ids=[]):
         """
         If the genome is edited or altered, this may cause
         genotypes to become broken in some way.
@@ -1651,7 +1653,7 @@ class Genome(BaseModel):
         """
         
         print 'Adding missing genes...'
-        self.add_missing_genes()
+        self.add_missing_genes(genotype_ids=genotype_ids)
         
         print 'Freshening fingerprints...'
         self.freshen_fingerprints()

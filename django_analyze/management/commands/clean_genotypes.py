@@ -31,5 +31,5 @@ class Command(BaseCommand):
         i = 0
         for genome in q.iterator():
             i += 1
-            genome.cleanup()
+            genome.cleanup(genotype_ids=genotype_ids)
         
