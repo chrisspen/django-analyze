@@ -24,7 +24,7 @@ class Command(BaseCommand):
         
         genotype_ids = [int(_) for _ in options['genotypes'].split(',') if _.isdigit()]
         if genotype_ids:
-            q = q.filter(genotypes__id=genotype_ids)
+            q = q.filter(genotypes__id__in=genotype_ids)
         
         q = q.distinct()
         total = q.count()
