@@ -3217,17 +3217,17 @@ class GenotypeGeneIllegal(BaseModel):
         editable=False,
         on_delete=models.DO_NOTHING)
         
-    dependee_name = models.CharField(
-        max_length=1000,
-        editable=False)
-    
-    dependee_value = models.CharField(
-        max_length=1000,
-        editable=False)
-    
-    illegal_value = models.CharField(
-        editable=False,
-        max_length=1000)
+#    dependee_name = models.CharField(
+#        max_length=1000,
+#        editable=False)
+#    
+#    dependee_value = models.CharField(
+#        max_length=1000,
+#        editable=False)
+#    
+#    illegal_value = models.CharField(
+#        editable=False,
+#        max_length=1000)
     
     class Meta:
         managed = False
