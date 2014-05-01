@@ -5,14 +5,6 @@ on gene dependency rules.
 DROP VIEW IF EXISTS django_analyze_genotypegeneillegal CASCADE;
 CREATE VIEW django_analyze_genotypegeneillegal
 AS
-/*
-SELECT  gg.id AS illegal_genotypegene_id,
-        g.name AS illegal_gene_name,
-        gt.id AS illegal_genotype_id,
-        g2.name AS dependee_name,
-        g.dependee_value,
-        gg2.value AS illegal_value
-*/
 SELECT  m.genotypegene_id AS illegal_genotypegene_id,
         g.name AS illegal_gene_name,
         m.genotype_id AS illegal_genotype_id

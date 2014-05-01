@@ -6,7 +6,10 @@ import constants as c
 import models
 
 import admin_steroids
-from admin_steroids.utils import view_related_link, view_link, classproperty
+from admin_steroids.utils import (
+    view_related_link, view_link, classproperty,
+    get_admin_changelist_url,
+)
 from admin_steroids.filters import NullListFilter
 
 class BaseModelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
@@ -165,6 +168,7 @@ class GeneAdmin(BaseModelAdmin):
         'type',
 #        ('dependee_gene', NullListFilter),
         ('dependencies', NullListFilter),
+        'genome',
     )
     
     readonly_fields = (
@@ -388,7 +392,8 @@ class GenomeAdmin(BaseModelAdmin):
                 obj,
                 'invalid_genotypes',
                 extra='&valid__exact=0',
-                template='{count} invalid')
+                template='{count} invalid') + '&nbsp;' + \
+            ('<a href="%s" class="button" target="_blank">Add</a>' % (get_admin_changelist_url(models.Genotype)+'add/?genome='+str(obj.id),))
         except Exception, e:
             return str(e)
     genotypes_link.allow_tags = True
