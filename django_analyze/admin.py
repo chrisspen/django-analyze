@@ -33,11 +33,13 @@ class PredictorAdmin(BaseModelAdmin):
         'testing_r2',
         'predicted_score',
         'evaluating',
+        'test',
         'fresh',
         'valid',
     ]
     list_filter = (
         'evaluating',
+        'test',
         'fresh',
         'valid',
         'training_ontime',

@@ -13,14 +13,15 @@ from django_analyze import models
 safe_backends = ['django.core.cache.backends.locmem.LocMemCache']
 
 class Command(BaseCommand):
-    args = '<genome ids>'
+    args = ''
     help = 'Prepares genomes for production use.'
     option_list = BaseCommand.option_list + (
         make_option('--processes', default=1, help='The number of processes to use for evaluating.'),
+        make_option('--genomes', default='')
     )
 
     def handle(self, *args, **options):
-        ids = [int(_) for _ in args]
+        ids = [int(_) for _ in options['genomes'].split(',')]
         q = models.Genome.objects.all().only('id')
         if ids:
             q = q.filter(id__in=ids)

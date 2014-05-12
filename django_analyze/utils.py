@@ -1,15 +1,18 @@
+import errno
+import multiprocessing
 import os
 import random
 import sys
 import threading
-import traceback
 import time
-import errno
+import traceback
 import warnings
 
 from datetime import datetime, timedelta
 from collections import defaultdict, OrderedDict
-from multiprocessing import Process, Queue, Lock, current_process
+
+from ctypes import c_double
+from multiprocessing.sharedctypes import Value
 
 import psutil
 
@@ -75,12 +78,9 @@ def get_cpu_usage(pid, recursive=True):
         pass
     return total
 
-from ctypes import c_double
-from multiprocessing.sharedctypes import Value
-
 #TODO:extend the use of Process to distributed architextures?
 #http://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing/
-class TimedProcess(Process):
+class TimedProcess(multiprocessing.Process):
     """
     Helper to allow us to time a specific chunk of code and determine when
     it has reached a timeout.
@@ -477,10 +477,13 @@ class MultiProgress(object):
             
         ), **kwargs)
         
-        self.lock = Lock()
         self.progress = OrderedDict()
         self.progress_done = set()
-        self.status = Queue()
+        #self.status = multiprocessing.Queue()#throws error if used from Pool()
+        manager = multiprocessing.Manager()
+        self.status = manager.Queue()
+        #self.lock = multiprocessing.Lock()#throws error if used from Pool()
+        self.lock = manager.Lock()
         self.outgoing = {} # {pid:Queue()}
         self.last_progress_refresh = None
         self.bar_length = 10
@@ -562,11 +565,11 @@ class MultiProgress(object):
         time.sleep(0.01)
     
     def write(self, *message):
+        self.pid = os.getpid()
+        self.reinit()
         message = (' '.join(map(str, message))).strip()
         if not message:
             return
-#        if not self.pid:
-#            return
         self.status.put([
             self.pid,
             self.current_count,

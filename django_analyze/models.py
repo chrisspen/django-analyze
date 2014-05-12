@@ -215,7 +215,12 @@ class Label(BaseModel):
         self._logical = self.get_logical()
         
         super(Label, self).save(*args, **kwargs)
-        
+
+class PredictorManager(models.Manager):
+    
+    def usable(self):
+        return self.filter(fresh=True, valid=True)
+
 class Predictor(BaseModel, MaterializedView):
     """
     A general base class for creating an object that takes training samples
@@ -342,6 +347,14 @@ class Predictor(BaseModel, MaterializedView):
             the allotted time, and so it is not suitable for use.''',
     )
     
+    epoche_trained = models.PositiveIntegerField(
+        default=0,
+        blank=False,
+        null=False,
+        editable=False,
+        db_index=True,
+        help_text=_('The epoche when this predictor was trained.'))
+    
     testing_r2 = models.FloatField(
         blank=True,
         null=True,
@@ -407,12 +420,45 @@ class Predictor(BaseModel, MaterializedView):
         null=True,
         help_text="The date and time when this classifier last classified.")
     
+    training_threshold_accuracy = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False)
+    
+    training_threshold_coverage = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=('''The ratio of training samples that fell within
+            the certainty threshold. 1.0 means everything covered.
+            0.0 means nothing covered. Higher is better.'''))
+    
+    testing_threshold_accuracy = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False)
+    
+    testing_threshold_coverage = models.FloatField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=('''The ratio of testing samples that fell within
+            the certainty threshold. 1.0 means everything covered.
+            0.0 means nothing covered. Higher is better.'''))
+    
+    extra_evaluation_seconds = models.FloatField(
+        blank=True,
+        null=True,
+        help_text=_('''Additional seconds that should be added to the
+            evaluation time, due to caching of shared resources.'''))
+    
     #classifier = PickledObjectField(blank=True, null=True)
     _predictor = models.TextField(
         blank=True,
         null=True,
         editable=False,
-        db_column='classifier')
+        db_column='classifier',
+        help_text=_('The serialized model for use in production.'))
     
     @property
     def predictor(self):
@@ -516,13 +562,17 @@ class Predictor(BaseModel, MaterializedView):
         db_index=True,
         help_text='If true, indicates this predictor is ready to classify.')
 
+    test = models.NullBooleanField(
+        editable=False,
+        default=True,
+        db_index=True,
+        help_text=_('''If true, indicates this predictor is for testing.
+            If false, indicates this predictor is for production use.'''))
+    
     valid = models.NullBooleanField(
         editable=False,
         db_index=True,
         help_text='If true, indicates this was trained without error.')
-    
-    #@classmethod
-    #def create(cls):
 
     class Meta:
         abstract = True
@@ -1534,25 +1584,33 @@ class Genome(BaseModel):
         name = self.evaluator
         name = name.replace('.models.', '.')
         cls = _evaluators.get(name)
-        if cls is None:
-            raise Exception, 'Could not find class for evaluator %s' % (self.evaluator,)
+#        if cls is None:
+#            raise Exception, 'Could not find class for evaluator %s' % (self.evaluator,)
         return cls
     
     @property
     def evaluator_function(self):
-        return self.evaluator_cls.evaluate_genotype
+        cls = self.evaluator_cls
+        if cls:
+            return cls.evaluate_genotype
     
     @property
     def mark_stale_function(self):
-        return self.evaluator_cls.mark_stale_genotype
+        cls = self.evaluator_cls
+        if cls:
+            return cls.mark_stale_genotype
     
     @property
     def reset_function(self):
-        return self.evaluator_cls.reset_genotype
+        cls = self.evaluator_cls
+        if cls:
+            return cls.reset_genotype
     
     @property
     def pre_delete_function(self):
-        return self.evaluator_cls.pre_delete_genotype
+        cls = self.evaluator_cls
+        if cls:
+            return cls.pre_delete_genotype
     
     @property
     def is_production_ready_function(self):
@@ -3048,29 +3106,8 @@ class Genotype(models.Model):
     def full_clean(self, check_fingerprint=True, *args, **kwargs):
         return self.clean(check_fingerprint=check_fingerprint, *args, **kwargs)
     
-    def update_status(self, success_parts, ontime_parts, total_parts, complete_parts, production=False):
-        if production:
-            self.production_total_parts = total_parts
-            self.production_success_parts = success_parts
-            self.production_ontime_parts = ontime_parts
-            self.production_complete_parts = complete_parts
-            self.production_success_ratio = success_parts/float(total_parts) if total_parts else None
-            self.production_ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
-            
-            self.production_complete_ratio = None
-            if self.production_total_parts and self.production_complete_parts is not None:
-                self.production_complete_ratio = self.production_complete_parts/float(self.production_total_parts)
-            
-            type(self).objects.filter(id=self.id).update(
-                production_total_parts=self.production_total_parts,
-                production_complete_parts=self.production_complete_parts,
-                production_success_parts=self.production_success_parts,
-                production_ontime_parts=self.production_ontime_parts,
-                production_success_ratio=self.production_success_ratio,
-                production_ontime_ratio=self.production_ontime_ratio,
-                production_complete_ratio=self.production_complete_ratio,
-            )
-        else:
+    def update_status(self, success_parts, ontime_parts, total_parts, complete_parts, test=True):
+        if test:
             self.total_parts = total_parts
             self.success_parts = success_parts
             self.ontime_parts = ontime_parts
@@ -3090,6 +3127,27 @@ class Genotype(models.Model):
                 success_ratio=self.success_ratio,
                 ontime_ratio=self.ontime_ratio,
                 complete_ratio=self.complete_ratio,
+            )
+        else:
+            self.production_total_parts = total_parts
+            self.production_success_parts = success_parts
+            self.production_ontime_parts = ontime_parts
+            self.production_complete_parts = complete_parts
+            self.production_success_ratio = success_parts/float(total_parts) if total_parts else None
+            self.production_ontime_ratio = ontime_parts/float(total_parts) if total_parts else None
+            
+            self.production_complete_ratio = None
+            if self.production_total_parts and self.production_complete_parts is not None:
+                self.production_complete_ratio = self.production_complete_parts/float(self.production_total_parts)
+            
+            type(self).objects.filter(id=self.id).update(
+                production_total_parts=self.production_total_parts,
+                production_complete_parts=self.production_complete_parts,
+                production_success_parts=self.production_success_parts,
+                production_ontime_parts=self.production_ontime_parts,
+                production_success_ratio=self.production_success_ratio,
+                production_ontime_ratio=self.production_ontime_ratio,
+                production_complete_ratio=self.production_complete_ratio,
             )
     
     def save(self, check_fingerprint=True, using=None, *args, **kwargs):
