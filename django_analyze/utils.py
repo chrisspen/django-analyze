@@ -523,7 +523,12 @@ class MultiProgress(object):
                 del self.to_children[pid]
             if pid in self.to_parent:
                 del self.to_parent[pid]
+            if pid in self.pid_start_times:
+                del self.self.pid_start_times[pid]
             return
+        if pid in self.pid_start_times:
+            return
+        self.pid_start_times[pid] = (datetime.now(), 0)
         try:
             p = psutil.Process(pid)
             parent = p.parent()
@@ -583,7 +588,107 @@ class MultiProgress(object):
         ])
         time.sleep(0.01)
     
-    def flush(self, force=True):
+    def flush(self, *args, **kwargs):
+        self.flush_streaming(*args, **kwargs)
+        #TODO:support switch
+        #self.flush_stacked(*args, **kwargs)
+        
+    def flush_streaming(self, force=True):
+        try:
+            self.lock.acquire()
+            while not self.status.empty():
+                pid, current, total, sub_current, sub_total, eta, sut, cpu, message = self.status.get()
+                
+                self.register_pid(pid)
+                
+                start_datetime, start_count = self.pid_start_times.get(pid, (datetime.now(), 0))
+                current = current or 0
+                total = total or 0
+                
+                eta = eta or calculate_eta(
+                    start_datetime=start_datetime,
+                    start_count=start_count,
+                    current_count=current,
+                    total_count=total,
+                )
+                if eta:
+                    eta = eta.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    eta = '????-??-?? ??:??:??'
+                
+                # If CPU not given, then attempt to calculate it.
+                if cpu is None:
+                    cpu = get_cpu_usage(pid=pid)
+                if cpu is None:
+                    cpu = '???.??'
+                else:
+                    cpu = '%06.2f' % (cpu,)
+                    
+                
+                # If the process completed, and we've already shown its last
+                # message, then don't show it anymore.
+                if not pid_exists(pid) and self.hide_complete \
+                and current is not None and total is not None \
+                and current >= total and pid in self.progress_done:
+                    del self.progress[pid]
+                    continue
+                
+                elif total:
+                    self.pid_counts[pid] = (current, total)
+                    percent = current/float(total)
+                    percent = int(percent * 100)
+                else:
+                    percent = 0
+                    
+                sub_status = ''
+                if sub_current and sub_total:
+                    sub_status = '(subtask %s of %s) ' % (sub_current, sub_total)
+                    
+                ts = ''
+                if self.show_timestamp:
+                    ts = '%s ' % datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    
+                #alive = pid_exists(pid)
+                try:
+                    alive = True
+                    p = psutil.Process(pid)
+                except psutil.NoSuchProcess:
+                    alive = False
+                    continue
+                
+                try:
+                    parent = p.parent()
+                    if parent is not None:
+                        parent = parent.pid
+                except psutil.NoSuchProcess:
+                    parent = None
+                    
+                if sut is None or sut == float('inf'):
+                    sut = '?'
+                else:
+                    sut = '%03i' % sut
+                
+                template = "{ts}{parent}->{child} {current:04d} of {total:04d} {sub_status}{percent:03.0f}% eta={eta} sut={sut} cpu={cpu}: {message}\n"
+#                    print template
+                data = dict(
+                    ts=ts,
+                    parent=parent,
+                    child=pid,
+                    current=current,
+                    total=total,
+                    sub_status=sub_status,
+                    percent=percent,
+                    eta=eta,
+                    sut=sut,
+                    cpu=cpu,
+                    message=message,
+                )
+                self.fout.write(template.format(**data))
+            
+        finally:
+            self.lock.release()
+        
+    def flush_stacked(self, force=True):
         """
         Displays all output from all processes in an ordered list.
         This should only be called by the parent process.
@@ -818,20 +923,6 @@ class MultiProgress(object):
             
             finally:
                 self.lock.release()
-        
-        # Update job.
-        # NOTE: Don't do this, as it will conflict with user specified job update.
-#        if not self.only_changes or (self.only_changes and self.changed):
-#            overall_current_count = 0
-#            overall_total_count = 0
-#            for pid, (current, total) in self.pid_counts.iteritems():
-#                overall_current_count += current
-#                overall_total_count += total
-#            if overall_total_count:
-#                Job.update_progress(
-#                    total_parts_complete=overall_current_count,
-#                    total_parts=overall_total_count,
-#                )
                 
         self.changed = False
 
