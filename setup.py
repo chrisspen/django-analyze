@@ -12,8 +12,9 @@ def get_reqs():
         
         'django-materialized-views>=0.2.0',
         'django-admin-steroids>=0.1.13',
+        #'django-chroniker',
         
-        'psutil>=2.0.0',
+        'psutil>=2.1.1',
         
         'numpy', # required by scikit-learn
         'scipy', # required by scikit-learn, takes a long time to build
@@ -91,13 +92,16 @@ setup(
     description = "",
     license = "LGPL",
     url = "https://github.com/chrisspen/django-analyze",
+    #https://pypi.python.org/pypi?%3Aaction=list_classifiers
     classifiers = [
+        'Development Status :: 3 - Alpha',
         'Environment :: Web Environment',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: LGPL License',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
         'Framework :: Django',
+        'Topic :: Scientific/Engineering :: Artificial Intelligence',
     ],
     install_requires = get_reqs(),
     dependency_links = package_lookup.values(),

@@ -36,7 +36,13 @@ from django.dispatch import receiver
 
 from django_materialized_views.models import MaterializedView
 
-from chroniker.models import Job
+try:
+    from chroniker.models import Job
+except ImportError:
+    class Job(object):
+        @classmethod
+        def update_progress(cls, total_parts_complete, total_parts):
+            pass
 
 from admin_steroids.utils import StringWithTitle
 APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
@@ -1022,7 +1028,16 @@ class Genome(BaseModel):
         blank=True,
         null=True,
         editable=False,
-        help_text=_('A summary of unhandled exceptions encountered while evaluating genotypes.'))
+        help_text=_('''A summary of unhandled exceptions encountered while
+            evaluating genotypes.'''))
+    
+    version = models.PositiveIntegerField(
+        default=1,
+        editable=False,
+        help_text=_('''A unique reference number for the current allowable
+            genes. This is automatically incremented whenever genes
+            are modified.'''),
+    )
     
     class Meta:
         app_label = APP_LABEL
@@ -2470,6 +2485,7 @@ class Gene(BaseModel):
             self.update_coverage(auto_update=False)
         super(Gene, self).save(*args, **kwargs)
         
+        schema_change = False
         if old:
             old_values_list = old.get_values_list(as_text=True)
             values_list = self.get_values_list(as_text=True)
@@ -2494,7 +2510,31 @@ class Gene(BaseModel):
                 if cnt:
                     print 'Setting %i genotype genes to the default value.' % (cnt,)
                     q.update(_value=self.default)
+                    
+            fields_to_check = ['type', 'values', 'default', 'min_value', 'max_value']
+            for field in fields_to_check:
+                if getattr(self, field) != getattr(old, field):
+                    schema_change = True
+                    break
+        else:
+            schema_change = True
+        
+        # If we changed a schema-effecting field, increment the genome's
+        # schema version.
+        if schema_change:
+            Genome.objects.filter(id=self.genome.id).update(version=F('version')+1)
     
+#    @staticmethod
+#    def post_save(sender, instance, *args, **kwargs):
+#        self = instance
+#        Genome.objects.filter(id=self.genome.id).update(version=F('version')+1)
+        
+    @staticmethod
+    def post_delete(sender, instance, *args, **kwargs):
+        self = instance
+        # If we deleted a gene, the genome schema version always increments.
+        Genome.objects.filter(id=self.genome.id).update(version=F('version')+1)
+        
     def get_max_value_count(self):
         """
         Returns the number of values this gene can assume.
@@ -3508,15 +3548,17 @@ class GenotypeGene(BaseModel):
             # deleted, then do nothing.
             pass
 
-#TODO:fix signals not being sent after inline parent saved
+#TODO:fix signals not being sent after inline parent saved?
 def connect_signals():
     #signals.post_save.connect(Genotype.post_save, sender=Genotype)
     signals.post_save.connect(GenotypeGene.post_save, sender=GenotypeGene)
     signals.post_delete.connect(GenotypeGene.post_delete, sender=GenotypeGene)
+    signals.post_delete.connect(Gene.post_delete, sender=Gene)
 
 def disconnect_signals():
     #signals.post_save.disconnect(Genotype.post_save, sender=Genotype)
     signals.post_save.disconnect(GenotypeGene.post_save, sender=GenotypeGene)
     signals.post_delete.disconnect(GenotypeGene.post_delete, sender=GenotypeGene)
+    signals.post_delete.disconnect(Gene.post_delete, sender=Gene)
 
 connect_signals()

@@ -524,7 +524,7 @@ class MultiProgress(object):
             if pid in self.to_parent:
                 del self.to_parent[pid]
             if pid in self.pid_start_times:
-                del self.self.pid_start_times[pid]
+                del self.pid_start_times[pid]
             return
         if pid in self.pid_start_times:
             return
@@ -693,7 +693,6 @@ class MultiProgress(object):
         Displays all output from all processes in an ordered list.
         This should only be called by the parent process.
         """
-        from chroniker.models import Job
         
         if not force:
             if self.last_progress_refresh and (datetime.now()-self.last_progress_refresh).seconds < self.refresh_period:

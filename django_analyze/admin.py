@@ -251,6 +251,7 @@ class GenomeAdmin(BaseModelAdmin):
         'epoches_link',
         'max_fitness',
         'min_fitness',
+        'version',
         #'epoches_since_improvement',
         'improving',
         'total_possible_genotypes_sci',
@@ -281,6 +282,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'evolving',
                 'evolution_start_datetime',
                 'total_possible_genotypes_sci',
+                'version',
             )
         }),
         ('Related models', {

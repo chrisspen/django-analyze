@@ -1,5 +1,5 @@
 """
-Wrappers around Yajl objects to simply incremental parsing of YAML data.
+Wrappers around Yajl objects to simplify incremental parsing of YAML data.
 """
 
 from yajl.yajl_parse import *

@@ -8,7 +8,7 @@ DATABASES = {
 #        'TEST_NAME': '/tmp/test.db',
     }
 }
-#ROOT_URLCONF = 'chroniker.urls'
+#ROOT_URLCONF = 'django_analyze.tests.urls'
 INSTALLED_APPS = [
     'django.contrib.auth',
     'django.contrib.contenttypes',

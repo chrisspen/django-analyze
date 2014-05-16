@@ -34,7 +34,7 @@ class Tests(TestCase):
             for _ in xrange(10):
                 time.sleep(1)
                 
-        def runner(lock):
+        def runner(lock, *args, **kwargs):
             # Do some useless non-nop calculation to constantly consume CPU cycles.
             a = 0
             for _ in xrange(100000000):
@@ -52,7 +52,7 @@ class Tests(TestCase):
 #            sys.stdout.flush()
 #            lock.release()
         
-        def sub_launcher(lock):
+        def sub_launcher(lock, *args, **kwargs):
             p = utils.TimedProcess(
                 max_seconds=100,
                 #target=waiter,

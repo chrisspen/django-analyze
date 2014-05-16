@@ -45,6 +45,15 @@ def find_object_pk(model, obj, data):
     return obj.id
 
 class ContentBuilderOnMap(YajlContentBuilder):
+    """
+    Special Yajl parser to incrementally load Django's JSON fixtures,
+    since the built-in Django loaddata command is too horribly inefficient
+    to handle large files.
+    
+    Since Django fixtures represent instances as a list of maps, this means
+    that whenever the parser encounters the end of a map at the top-level,
+    all preceding data can be used to unserialize an instance.
+    """
     
     total_objects = 0
     current_objects = 0
