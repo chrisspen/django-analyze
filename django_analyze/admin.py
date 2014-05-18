@@ -48,6 +48,9 @@ class PredictorAdmin(BaseModelAdmin):
     )
     
     readonly_fields = [
+        'test',
+        'fresh',
+        'valid',
         'predicted_value',
         'expected_value',
         'reference_value',

@@ -28,7 +28,7 @@ class Command(BaseCommand):
         make_option('--no-cleanup', action='store_true', default=False),
         make_option('--no-clear', action='store_true', default=False),
         make_option('--continuous', action='store_true', default=False),
-        make_option('--processes', default=8, help='The number of processes to use for evaluating.'),
+        make_option('--processes', default=-1, help='The number of processes to use for evaluating.'),
     )
 
     def handle(self, *args, **options):

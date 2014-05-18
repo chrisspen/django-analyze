@@ -49,3 +49,4 @@ class Command(BaseCommand):
             print genome
             genome.production_evaluate()
             
+            

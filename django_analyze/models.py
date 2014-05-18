@@ -3249,7 +3249,7 @@ class Genotype(models.Model):
                 'been set for genotype %s.') % (name, self.id)
         else:
             raise Exception, \
-                'No gene "%s" exists in genome %s.' % (name, self.id)
+                'No gene "%s" exists in genome %s.' % (name, self.genome.id)
         
     def as_dict(self):
         return dict((gene.gene.name, gene.value) for gene in self.genes.all())
