@@ -15,6 +15,7 @@ def get_reqs():
         #'django-chroniker',
         
         'psutil>=2.1.1',
+        'six>=1.5.2',
         
         'numpy', # required by scikit-learn
         'scipy', # required by scikit-learn, takes a long time to build
