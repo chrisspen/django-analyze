@@ -6,6 +6,7 @@ DATABASES = {
         # Don't do this. It dramatically slows down the test.
 #        'NAME': '/tmp/test.db',
 #        'TEST_NAME': '/tmp/test.db',
+        'NAME': ':memory:',
     }
 }
 #ROOT_URLCONF = 'django_analyze.tests.urls'

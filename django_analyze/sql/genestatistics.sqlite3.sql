@@ -1,10 +1,10 @@
 /*
 Aggregates all gene fitness statistics for the current epoche.
 */
-DROP VIEW IF EXISTS django_analyze_genestatistics CASCADE;
+DROP VIEW IF EXISTS django_analyze_genestatistics;
 CREATE VIEW django_analyze_genestatistics
 AS
-SELECT  CONCAT(CAST(gt.genome_id AS VARCHAR), '-', CAST(gg.gene_id AS VARCHAR), '-', CAST(gg.value AS VARCHAR)) AS id,
+SELECT  CAST(gt.genome_id AS VARCHAR) || '-' || CAST(gg.gene_id AS VARCHAR) || '-' || CAST(gg.value AS VARCHAR) AS id,
         gt.genome_id,
         gg.gene_id,
         gg.value,

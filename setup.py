@@ -76,11 +76,11 @@ class TestCommand(Command):
             return
                 
         if self.name:
-            cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings django_analyze.tests.tests.Tests.%s; deactivate' % self.name
+            cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --traceback --settings=django_analyze.tests.settings django_analyze.tests.tests.Tests.%s; deactivate' % self.name
         else:
             #cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings tests; deactivate'
-            cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --settings=django_analyze.tests.settings; deactivate'
-        #print cmd
+            cmd = '. ./.env/bin/activate; django-admin.py test --pythonpath=. --traceback --settings=django_analyze.tests.settings; deactivate'
+        print cmd
         os.system(cmd)
 
 setup(

@@ -1,7 +1,7 @@
 /*
 Find all genes that don't have a corresponding genotype gene value but should.
 */
-DROP VIEW IF EXISTS django_analyze_genotypegenemissing CASCADE;
+DROP VIEW IF EXISTS django_analyze_genotypegenemissing;
 CREATE VIEW django_analyze_genotypegenemissing
 AS
 SELECT  m.gene_id,

@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from django_analyze import models
 from django_analyze import utils
+from django_analyze import constants as c
 
 import warnings
 warnings.simplefilter('error', RuntimeWarning)
@@ -154,4 +155,73 @@ class Tests(TestCase):
         self.assertAlmostEqual(b_count, b_ratio, places=1)
         self.assertAlmostEqual(c_count, c_ratio, places=1)
         self.assertAlmostEqual(d_count, d_ratio, places=1)
+    
+    def test_allowed_genes(self):
+        
+        genome = models.Genome.objects.create(name='test')
+        
+        algorithm_gene = models.Gene.objects.create(
+            genome=genome,
+            name='algorithm',
+            type=c.GENE_TYPE_STR,
+            values='SGDClassifier,RandomForestClassifier,ExtraTreesClassifier',
+            default='SGDClassifier')
+        
+        # Denote n_estimators as requiring a tree-based algorithm gene value.
+        n_estimators_gene = models.Gene.objects.create(
+            genome=genome,
+            name='n_estimators',
+            type=c.GENE_TYPE_INT,
+            values='10,20,40,80',
+            default='10')
+        models.GeneDependency.objects.create(
+            gene=n_estimators_gene,
+            dependee_gene=algorithm_gene,
+            dependee_value='RandomForestClassifier',
+            positive=True)
+        models.GeneDependency.objects.create(
+            gene=n_estimators_gene,
+            dependee_gene=algorithm_gene,
+            dependee_value='ExtraTreesClassifier',
+            positive=True)
+        
+        # Create a genotype is we can confirm the gene combination is allowed.
+        gt1 = models.Genotype.objects.create(genome=genome)
+        
+        missing = models.GenotypeGeneMissing.objects.filter(genotype=gt1)
+        #print [_.gene.name for _ in missing]
+        self.assertEqual(missing.count(), 1) # should recommend algorithm gene
+        
+        gg_algorithm = models.GenotypeGene.objects.create(
+            genotype=gt1,
+            gene=algorithm_gene,
+            _value='ExtraTreesClassifier')
+        
+        missing = models.GenotypeGeneMissing.objects.filter(genotype=gt1)
+        #print [_.gene.name for _ in missing]
+        self.assertEqual(missing.count(), 1) # should recommend n_estimators gene
+        
+        models.GenotypeGene.objects.create(
+            genotype=gt1,
+            gene=n_estimators_gene,
+            _value='10')
+        
+        missing = models.GenotypeGeneMissing.objects.filter(genotype=gt1)
+        #print [_.gene.name for _ in missing]
+        self.assertEqual(missing.count(), 0)
+        
+        gt1_genes = gt1.genes.all()
+        #print 'genes:',[_.gene.name for _ in gt1_genes.all()]
+        self.assertEqual(gt1_genes.all().count(), 2)
+        
+        illegal = models.GenotypeGeneIllegal.objects.filter(genotype=gt1)
+        self.assertEqual(illegal.count(), 0)
+        
+        # Change algorithm to break rule, and confirm illegal query catches it.
+        gg_algorithm._value = 'SGDClassifier'
+        gg_algorithm.save()
+        
+        illegal = models.GenotypeGeneIllegal.objects.filter(genotype=gt1)
+        #print 'illegal:',[_.illegal_gene_name for _ in illegal.all()]
+        self.assertEqual(illegal.count(), 1)
         

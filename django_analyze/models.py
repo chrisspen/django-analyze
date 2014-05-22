@@ -1644,31 +1644,29 @@ class Genome(BaseModel):
         and creates them.
         """
         _genotype_ids = set()
-        q = GenotypeGeneMissing.objects.filter(genotype__genome=self)
-        if genotype:
-            q = q.filter(genotype=genotype)
-        if genotype_ids:
-            q = q.filter(genotype__id__in=genotype_ids)
-        total = q.count()
-        if total:
+        while 1:
+            q = GenotypeGeneMissing.objects.filter(genotype__genome=self)
+            if genotype:
+                q = q.filter(genotype=genotype)
+            if genotype_ids:
+                q = q.filter(genotype__id__in=genotype_ids)
+            total = q.count()
+            if not total:
+                break
             print 'Adding %i missing gene values.' % (total,)
             i = 0
-            for missing in q.iterator():
+            for missing in q:#.iterator():
                 i += 1
-                if not i % 10:
+                if i == 1 or not i % 10 or i == total:
                     print '\rAdding gene value %i of %i...' % (i, total),
                     sys.stdout.flush()
                 _genotype_ids.add(missing.genotype_id)
+                #print 'adding missing:',missing.gene_name
                 missing.create()
-            # Check a second time in case we added a dependee gene
-            # which should now catch any missing dependent genes.
-            for missing in q.iterator():
-                _genotype_ids.add(missing.genotype_id)
-                missing.create()
-            print '\rAdding gene value %i of %i...' % (total, total),
-            print
+            print '\nDone!'
             sys.stdout.flush()
-        Genotype.mark_stale(_genotype_ids, save=save)
+        if _genotype_ids:
+            Genotype.mark_stale(_genotype_ids, save=save)
     
     @commit_on_success
     def delete_worst_genotypes(self):
@@ -1717,7 +1715,7 @@ class Genome(BaseModel):
         if save:
             self.save()
     
-    def cleanup(self, genotype_ids=[]):
+    def cleanup(self, genotype_ids=[], create=True, update=True, delete=True):
         """
         If the genome is edited or altered, this may cause
         genotypes to become broken in some way.
@@ -1725,14 +1723,17 @@ class Genome(BaseModel):
         or editing gene values to existing genotypes.
         """
         
-        print 'Adding missing genes...'
-        self.add_missing_genes(genotype_ids=genotype_ids)
+        if create:
+            print 'Adding missing genes...'
+            self.add_missing_genes(genotype_ids=genotype_ids)
         
-        print 'Freshening fingerprints...'
-        self.freshen_fingerprints()
+        if update:
+            print 'Freshening fingerprints...'
+            self.freshen_fingerprints()
         
-        print 'Deleting corrupt genotypes...'
-        self.delete_corrupt()
+        if delete:
+            print 'Deleting corrupt genotypes...'
+            self.delete_corrupt()
     
     def evolve(self,
         genotype_id=None,
@@ -1748,9 +1749,12 @@ class Genome(BaseModel):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
         """
-        from multiprocessing import Process, Queue, Lock
+        from multiprocessing import Process, Queue, Lock, cpu_count
         
-        assert processes >= 1
+        assert processes >= 0
+        
+        if not processes:
+            processes = cpu_count()
         
 #        assert not processes or utils.is_power_of_two(processes), \
 #            'Processes must be a power of 2.'
@@ -1823,6 +1827,7 @@ class Genome(BaseModel):
                             force_reset=force_reset,
                         )
                     else:
+                        #FIXME:replace with multiprocessing.map or Pool?
                         for _ in xrange(processes):
                             django.db.connection.close()
                             p = Process(
@@ -2713,15 +2718,18 @@ class Genotype(models.Model):
     mean_evaluation_seconds = models.FloatField(
         blank=True,
         null=True,
-        editable=False)
+        editable=False,
+        help_text=_('''When an evaluate is composed of multiple parts,
+            represents the average evaluate time for each part.'''))
     
     total_evaluation_seconds = models.PositiveIntegerField(
         blank=True,
         null=True,
         editable=False,
         help_text=_('''The total time it last took to evaluate
-            the genotype.'''))
+            the genotype. This is set automatically.'''))
     
+    #TODO:deprecated? genotype should only store fitness
     mean_absolute_error = models.FloatField(
         blank=True,
         null=True,
@@ -2730,6 +2738,7 @@ class Genotype(models.Model):
         help_text=_('''The mean-absolute-error measure recorded during
             fitness evaluation.'''))
     
+    #TODO:deprecated? genotype should only store fitness
     accuracy = models.FloatField(
         blank=True,
         null=True,

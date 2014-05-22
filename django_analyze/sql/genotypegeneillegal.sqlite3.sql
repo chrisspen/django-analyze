@@ -1,17 +1,18 @@
 /*
-Find all genes that don't have a corresponding genotype gene value but should.
+Find all genotype gene values that aren't legally permissable based
+on gene dependency rules.
 */
-DROP VIEW IF EXISTS django_analyze_genotypegenemissing CASCADE;
-CREATE VIEW django_analyze_genotypegenemissing
+DROP VIEW IF EXISTS django_analyze_genotypegeneillegal;
+CREATE VIEW django_analyze_genotypegeneillegal
 AS
-SELECT  m.gene_id,
-        m.genotype_id,
-        g.name AS gene_name,
-        g."default"
+SELECT  m.genotypegene_id AS illegal_genotypegene_id,
+        g.name AS illegal_gene_name,
+        m.genotype_id AS illegal_genotype_id
 FROM (
     SELECT  m.genotype_id,
             m.gene_id,
-            SUM(CASE
+            m.genotypegene_id,
+            COUNT(CASE
                 WHEN m.dependent_gene_id IS NULL
                     THEN 1
                 WHEN m.dependent_gene_polarity AND m.should_add1 > 0
@@ -20,11 +21,12 @@ FROM (
                 WHEN not m.dependent_gene_polarity AND m.should_add1 = m.should_add2
                     -- all values for this dependency are ANDed
                     THEN 1
-                ELSE 0
-            END)=COUNT(*) AS should_add
+                ELSE NULL
+            END) = COUNT(*) AS should_add
     FROM (
         SELECT  gt.id AS genotype_id,
                 g.id AS gene_id,
+                gg.id AS genotypegene_id,
                 g3.id as dependent_gene_id,
                 gd3.positive as dependent_gene_polarity,
     
@@ -62,18 +64,20 @@ FROM (
                 gg3.genotype_id = gt.id
             AND gg3.gene_id = g3.id
     
-        WHERE   gg.id IS NULL -- if we have it it is not missing
-        -- and gt.id=2777
+        WHERE   gg.id IS NOT NULL -- if we have it
+        --and gt.id=2777 and gg.id=2023482
         GROUP BY
             gt.id,
             g.id,
+            gg.id,
             g3.id,
             gd3.positive
 
     ) AS m
     GROUP BY
         m.genotype_id,
-        m.gene_id
+        m.gene_id,
+        m.genotypegene_id
 ) AS m
 INNER JOIN django_analyze_gene AS g ON g.id = m.gene_id
-WHERE m.should_add;
+WHERE NOT m.should_add;
