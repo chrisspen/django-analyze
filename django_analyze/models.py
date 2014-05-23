@@ -1427,7 +1427,7 @@ class Genome(BaseModel):
                 a.add(genome)
         return a
     
-    def delete_corrupt(self, save=True):
+    def delete_corrupt(self, genotype_ids=[], save=True):
         """
         Deletes genotypes without a fingerprint, which should only happen
         because it collided with a duplicate genotype.
@@ -1435,13 +1435,19 @@ class Genome(BaseModel):
         
         # Delete all genotypes that couldn't render a fingerprint, implying
         # it's a duplicate.
-        for gt in self.genotypes.filter(fingerprint__isnull=True).iterator():
+        q = self.genotypes.filter(fingerprint__isnull=True)
+        if genotype_ids:
+            q = q.filter(id__in=genotype_ids)
+        for gt in q.iterator():
             print 'Deleting corrupt genotype %s...' % (gt,)
             gt.delete()
         
         # Delete all genotype genes that are illegal.
         genotype_ids = set()
-        q = GenotypeGeneIllegal.objects.filter(genotype__genome=self).values_list('genotype', flat=True).distinct()
+        q = GenotypeGeneIllegal.objects.filter(genotype__genome=self)\
+            .values_list('genotype', flat=True).distinct()
+        if genotype_ids:
+            q = q.filter(genotype__id__in=genotype_ids)
         total = q.count()
         if total:
             print 'Deleting illegal genes from %i genotypes.' % (total,)
@@ -1456,7 +1462,7 @@ class Genome(BaseModel):
         # to make them identical to another genotype, causing a conflict.
         Genotype.mark_stale(genotype_ids, save=save)
     
-    def freshen_fingerprints(self):
+    def freshen_fingerprints(self, genotype_ids=[]):
         """
         Genome
         
@@ -1466,6 +1472,8 @@ class Genome(BaseModel):
         """
         q = Genotype.objects.get_stale_fingerprints()
         q = q.filter(genome=self)
+        if genotype_ids:
+            q = q.filter(id__in=genotype_ids)
         total = q.count()
         i = 0
         for genotype in q.iterator():
@@ -1729,11 +1737,11 @@ class Genome(BaseModel):
         
         if update:
             print 'Freshening fingerprints...'
-            self.freshen_fingerprints()
+            self.freshen_fingerprints(genotype_ids=genotype_ids)
         
         if delete:
             print 'Deleting corrupt genotypes...'
-            self.delete_corrupt()
+            self.delete_corrupt(genotype_ids=genotype_ids)
     
     def evolve(self,
         genotype_id=None,
