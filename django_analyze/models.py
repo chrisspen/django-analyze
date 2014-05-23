@@ -1444,10 +1444,10 @@ class Genome(BaseModel):
         
         # Delete all genotype genes that are illegal.
         genotype_ids = set()
-        q = GenotypeGeneIllegal.objects.filter(genotype__genome=self)\
-            .values_list('genotype', flat=True).distinct()
+        q = GenotypeGeneIllegal.objects.filter(genotype__genome=self)
         if genotype_ids:
             q = q.filter(genotype__id__in=genotype_ids)
+        q = q.values_list('genotype', flat=True).distinct()
         total = q.count()
         if total:
             print 'Deleting illegal genes from %i genotypes.' % (total,)
