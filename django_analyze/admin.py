@@ -507,12 +507,16 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
     
     list_display = (
         'id',
+        'immortal',
+        'fresh',
+        'valid',
+        'description',
         'genome',
         'status',
         'species',
         'fitness',
-        'mean_absolute_error',
-        'accuracy',
+#        'mean_absolute_error',
+#        'accuracy',
         'mean_evaluation_seconds',
         'total_evaluation_seconds',
         'success_ratio',
@@ -522,14 +526,12 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
         'generation',
         'epoche_of_creation',
         'epoche_of_evaluation',
-        'fitness_evaluation_datetime',
-        'fresh',
-        'valid',
-        'fingerprint_bool',
-        'immortal',
+        #'fitness_evaluation_datetime',
+        #'fingerprint_bool',
     )
     
     list_filter = (
+        'genome',
         'fresh',
         'valid',
         'evaluating',
@@ -710,6 +712,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
                 'fields': [
                     'id',
                     genome_field,
+                    'description',
                     'immortal',
                     'genes_link',
                 ]

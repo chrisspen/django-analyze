@@ -2673,6 +2673,11 @@ class Genotype(models.Model):
         editable=False,
         related_name='genotypes')
     
+    description = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True)
+    
     fingerprint = models.CharField(
         max_length=700,
         db_column='fingerprint',
@@ -3111,7 +3116,7 @@ class Genotype(models.Model):
         q = self.illegal_gene_values.all()
         total = q.count()
         if total:
-            print 'Deleting %i illegal gene values.' % (total,)
+            print 'Deleting %i illegal gene values from genotype %i.' % (total, self.id)
             for illegal in q.iterator():
                 illegal.gene_value.delete()
     #        for gene in list(self.genes.all()):
@@ -3390,7 +3395,13 @@ class GenotypeGeneMissing(BaseModel):
         GenotypeGene.objects.create(
             genotype_id=self.genotype_id,
             gene_id=self.gene_id,
-            _value=gene.get_random_value(),
+            #_value=gene.get_random_value(),
+            # Note, we shouldn't a random value, because if a gene is added
+            # to formalize an implicit feature, the default represents the
+            # assumed value before this formalization. Therefore if we use
+            # a random value, we may be changing the behavior of existing
+            # genotypes.
+            _value=self.default,
         )
 
 class GenotypeGeneManager(models.Manager):
