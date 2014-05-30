@@ -6,13 +6,14 @@ import constants as c
 import models
 
 import admin_steroids
+import admin_steroids.options
 from admin_steroids.utils import (
     view_related_link, view_link, classproperty,
     get_admin_changelist_url,
 )
 from admin_steroids.filters import NullListFilter
 
-class BaseModelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
+class BaseModelAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
     pass
 
 class PredictorAdmin(BaseModelAdmin):
@@ -107,7 +108,7 @@ class PredictorAdmin(BaseModelAdmin):
 
 class GeneInline(
     #admin.TabularInline
-    admin_steroids.BetterRawIdFieldsTabularInline):
+    admin_steroids.options.BetterRawIdFieldsTabularInline):
     
     model = models.Gene
     extra = 0
@@ -134,7 +135,7 @@ class GeneInline(
 
 class GeneDependencyInline(
     #admin.TabularInline
-    admin_steroids.BetterRawIdFieldsTabularInline):
+    admin_steroids.options.BetterRawIdFieldsTabularInline):
     
     model = models.GeneDependency
     extra = 1
@@ -497,7 +498,7 @@ def register_callback(modeladmin, callback):
     _callbacks.setdefault(modeladmin, [])
     _callbacks[modeladmin].append(callback)
 
-class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
+class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
     
 #    modeladmin_callbacks = set()
     
@@ -805,7 +806,7 @@ class GenotypeAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
 
 admin.site.register(models.Genotype, GenotypeAdmin)
 
-class EpocheAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.ReadonlyModelAdmin):
+class EpocheAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin, admin_steroids.options.ReadonlyModelAdmin):
     
     list_display = (
         'index',
@@ -822,7 +823,7 @@ class EpocheAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.Rea
     
 admin.site.register(models.Epoche, EpocheAdmin)
 
-class GeneStatisticsAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_steroids.ReadonlyModelAdmin):
+class GeneStatisticsAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin, admin_steroids.options.ReadonlyModelAdmin):
     
     list_display = (
         'genome',
@@ -865,7 +866,7 @@ class GeneStatisticsAdmin(admin_steroids.BetterRawIdFieldsModelAdmin, admin_ster
 admin.site.register(models.GeneStatistics, GeneStatisticsAdmin)
 
 
-class LabelAdmin(admin_steroids.BetterRawIdFieldsModelAdmin):
+class LabelAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
 
     list_display = (
         'name',

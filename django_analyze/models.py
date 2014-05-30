@@ -1291,11 +1291,13 @@ class Genome(BaseModel):
         determines if the next proposed gene is applicable.
         """
         assert isinstance(next_gene, Gene)
-        if not next_gene.dependee_gene:
-            return True
-        elif priors.get(next_gene.dependee_gene) == next_gene.dependee_value:
-            return True
-        return False
+        return True
+        #TODO:fix to use GeneDependency
+#        if not next_gene.dependee_gene:
+#            return True
+#        elif priors.get(next_gene.dependee_gene) == next_gene.dependee_value:
+#            return True
+#        return False
     
     def create_random_genotype(self):
         """
@@ -1305,7 +1307,7 @@ class Genome(BaseModel):
         new_genotype = self.create_blank_genotype()
         d = {}
         new_ggenes = []
-        for gene in self.genes.all().order_by('-dependee_gene__id'):
+        for gene in self.genes.all():#.order_by('-dependee_gene__id'):
             if not self.is_allowable_gene(priors=d, next_gene=gene):
                 continue
             d[gene] = _value = gene.get_random_value()
@@ -1344,7 +1346,7 @@ class Genome(BaseModel):
         priors = {}
         # Order independent genes first so we don't automatically ignore
         # dependent genes just because we haven't added their dependee yet.
-        genes = sorted(all_values.iterkeys(), key=lambda gene: gene.dependee_gene)
+        genes = all_values.iterkeys()#sorted(all_values.iterkeys(), key=lambda gene: gene.dependee_gene)
         ggenes = []
         for gene in genes:
             if not self.is_allowable_gene(priors=priors, next_gene=gene):
@@ -1370,7 +1372,7 @@ class Genome(BaseModel):
         
         priors = {}
         
-        ggenes = genotype.genes.order_by('-gene__dependee_gene__id')
+        ggenes = genotype.genes.all()#order_by('-gene__dependee_gene__id')
         ggene_count = ggenes.count()
         ggene_weights = dict((ggene, max(ggene.gene.mutation_weight or 0, 0)) for ggene in ggenes.iterator())
         ggene_weights_sum = sum(max(ggene.gene.mutation_weight or 0, 0) for ggene in ggenes.iterator())
@@ -3496,27 +3498,27 @@ class GenotypeGene(BaseModel):
             self._value = str(v)
             self._value_genome = None
     
-    def is_legal(self):
-        """
-        Returns true if this gene value is allowed to exist in this genotype
-        based on gene dependency rules.
-        Returns false otherwise, implying it should be deleted.
-        """
-        if not self.gene.dependee_gene:
-            # We're not dependent on any other gene, so we're implicitly
-            # allowed to exist.
-            return True
-        q = self.genotype.genes.filter(gene=self.gene.dependee_gene)
-        if not q.count():
-            # We're dependent on a gene that doesn't exist in this genotype,
-            # so we shouldn't exist either.
-            return False
-        elif q[0]._value != self.gene.dependee_value:
-            # We're dependent on an existing gene, but its value differs from
-            # the value we require so we shouldn't exist.
-            return False
-        return True
-    is_legal.boolean = True
+#    def is_legal(self):
+#        """
+#        Returns true if this gene value is allowed to exist in this genotype
+#        based on gene dependency rules.
+#        Returns false otherwise, implying it should be deleted.
+#        """
+#        if not self.gene.dependee_gene:
+#            # We're not dependent on any other gene, so we're implicitly
+#            # allowed to exist.
+#            return True
+#        q = self.genotype.genes.filter(gene=self.gene.dependee_gene)
+#        if not q.count():
+#            # We're dependent on a gene that doesn't exist in this genotype,
+#            # so we shouldn't exist either.
+#            return False
+#        elif q[0]._value != self.gene.dependee_value:
+#            # We're dependent on an existing gene, but its value differs from
+#            # the value we require so we shouldn't exist.
+#            return False
+#        return True
+#    is_legal.boolean = True
         
     def clean(self, *args, **kwargs):
         """
