@@ -47,6 +47,9 @@ class Command(BaseCommand):
         # Genes.
         queries.append(models.Gene.objects.filter(genome__id=genome_id))
         
+        # Gene dependencies.
+        queries.append(models.GeneDependency.objects.filter(gene__genome__id=genome_id))
+        
         # Species.
         queries.append(models.Species.objects.filter(genome__id=genome_id))
         

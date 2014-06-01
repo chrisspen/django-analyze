@@ -701,7 +701,7 @@ class Species(BaseModel):
     
     def natural_key(self):
         return (self.index,) + self.genome.natural_key()
-    natural_key.dependencies = ['genome']
+    natural_key.dependencies = ['django_analyze.Genome']
     
     def letter(self):
         if self.index <= 0 or self.index >= 27:
@@ -2233,7 +2233,7 @@ class Epoche(BaseModel):
     
     def natural_key(self):
         return (self.index,) + self.genome.natural_key()
-    natural_key.dependencies = ['genome']
+    natural_key.dependencies = ['django_analyze.Genome']
     
     def save(self, force_recalc=False, *args, **kwargs):
         if self.id and (force_recalc or self.genome.epoche == self.index):
@@ -2387,6 +2387,16 @@ class GeneStatistics(BaseModel):
 #            
 #        super(EpocheGene, self).save(*args, **kwargs)
 
+class GeneDependencyManager(models.Manager):
+
+    def get_by_natural_key(self, gene_name, genome_name, dependee_gene_name, dependee_gene_genome_name, dependee_value):
+        gene = Gene.objects.get_by_natural_key(gene_name, genome_name)
+        dependee_gene = Gene.objects.get_by_natural_key(dependee_gene_name, dependee_gene_genome_name)
+        return self.get_or_create(
+            gene=gene,
+            dependee_gene=dependee_gene,
+            dependee_value=dependee_value)[0]
+    
 class GeneDependency(BaseModel):
     """
     Defines when a gene can be used if the dependee gene exists
@@ -2396,6 +2406,8 @@ class GeneDependency(BaseModel):
     in a disjunction (ORed together), so only one dependency
     has to be true to allow the gene to be used.
     """
+    
+    objects = GeneDependencyManager()
     
     gene = models.ForeignKey(
         'Gene',
@@ -2430,6 +2442,12 @@ class GeneDependency(BaseModel):
         unique_together = (
             ('gene', 'dependee_gene', 'dependee_value'),
         )
+    
+    natural_key_fields = ('gene', 'dependee_gene', 'dependee_value')
+    
+    def natural_key(self):
+        return self.gene.natural_key() + self.dependee_gene.natural_key() + (self.dependee_value,)
+    natural_key.dependencies = ['django_analyze.Gene']
 
 class GeneManager(models.Manager):
     
@@ -2570,7 +2588,7 @@ class Gene(BaseModel):
     
     def natural_key(self):
         return (self.name,) + self.genome.natural_key()
-    natural_key.dependencies = ['genome']
+    natural_key.dependencies = ['django_analyze.Genome']
     
     def update_mutation_weight(self, auto_update=True):
         cr = self.coverage_ratio
@@ -3152,7 +3170,7 @@ class Genotype(models.Model):
     
     def natural_key(self):
         return (self.fingerprint,) + self.genome.natural_key()
-    natural_key.dependencies = ['genome']
+    natural_key.dependencies = ['django_analyze.Genome']
 
     def get_fingerprint(self):
         return get_fingerprint(dict(
@@ -3559,7 +3577,7 @@ class GenotypeGene(BaseModel):
 
     def natural_key(self):
         return self.genotype.natural_key() + self.gene.natural_key()
-    natural_key.dependencies = ['genotype', 'gene']
+    natural_key.dependencies = ['django_analyze.Genotype', 'django_analyze.Gene']
     
     def __unicode__(self):
         return '<GenotypeGene:%s %s=%s>' % (self.id, self.gene.name, self._value)
