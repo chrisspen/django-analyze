@@ -24,3 +24,5 @@ GENE_TYPES = (
     bool,
     basestring,
 )
+
+POPULATE_ALL = 'all'

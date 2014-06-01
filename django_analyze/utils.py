@@ -1020,4 +1020,26 @@ class ProcessFactory(object):
         self.progress.flush()
         #TODO:fix? sometimes results in IOError: [Errno 32] Broken pipe?
         time.sleep(1)
-        
+
+def iter_elements(element_sets, rand=False):
+    """
+    Iterates over all combination of set elements.
+    
+    Will yield reduce(int.__mul__, [len(_) for _ in element_sets]) elements.
+    
+    If rand is True, the order of the yielded lists will be random.
+    """
+    element_sets = list(element_sets)
+    if not element_sets:
+        return
+    current_set = element_sets.pop(0)
+    if rand:
+        current_set = list(current_set)
+        random.shuffle(current_set)
+    for el in current_set:
+        if element_sets:
+            for lst in iter_elements(element_sets, rand=rand):
+                lst = [el] + lst
+                yield lst
+        else:
+            yield [el]

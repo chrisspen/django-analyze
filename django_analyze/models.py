@@ -54,6 +54,12 @@ from sklearn.externals import joblib
 
 from admin_steroids.utils import get_admin_change_url
 
+def get_fingerprint(d):
+    return obj_to_hash(tuple(sorted(
+        (k, v)
+        for k, v in d.items()
+    )))
+
 class FingerprintConflictError(ValidationError):
     pass
 
@@ -1299,6 +1305,26 @@ class Genome(BaseModel):
 #            return True
 #        return False
     
+    def create_genotype_from_dict(self, d):
+        """
+        Generates a genotype from a dictionary of gene values.
+        """
+        new_genotype = self.create_blank_genotype()
+        new_ggenes = []
+        for gene_name, gene_value in d.items():
+            if isinstance(gene_value, models.Model):
+                _value = str(gene_value.id)
+            else:
+                _value = str(gene_value)
+            gene = Gene.objects.get(genome=self, name=gene_name)
+            new_ggenes.append(GenotypeGene(
+                genotype=new_genotype,
+                gene=gene,
+                _value=_value,
+            ))
+        GenotypeGene.objects.bulk_create(new_ggenes)
+        return new_genotype
+    
     def create_random_genotype(self):
         """
         Generates a genotype with a random assortment of genes.
@@ -1487,7 +1513,7 @@ class Genome(BaseModel):
                 print 'Deleting genotype %i because it conflicts.' % (genotype.id,)
                 genotype.delete()
     
-    def populate(self, population=0):
+    def populate(self, population=0, populate_method=None):
         """
         Creates random genotypes until the maximum limit for un-evaluated
         genotypes is reached.
@@ -1496,7 +1522,8 @@ class Genome(BaseModel):
         last_pending = None
         populate_count = 0
         max_populate_retries = 10
-        maximum_population = population or self.maximum_population
+        theoretical_maximum_population = self.total_possible_genotypes()
+        maximum_population = min(population or self.maximum_population, theoretical_maximum_population)
         print 'Populating genotypes...'
         transaction.enter_transaction_management()
         transaction.managed(True)
@@ -1509,13 +1536,13 @@ class Genome(BaseModel):
                 #TODO:only look at fitness__isnull=True if maximum_population=0 or delete_inferiors=False?
                 #pending = self.pending_genotypes.count()
                 pending = self.genotypes.all().count()
-                if pending >= maximum_population:
-                    print 'Maximum unevaluated population has been reached.'
-                    break
+#                if pending >= maximum_population:
+#                    print 'Maximum unevaluated population has been reached.'
+#                    break
                 
                 # If there are literally no more unique combinations to find,
                 # then don't bother.
-                if self.genotypes.count() >= self.total_possible_genotypes():
+                if self.genotypes.count() >= maximum_population:
                     print 'Maximum theoretical population has been reached.'
                     break
                 
@@ -1541,64 +1568,133 @@ class Genome(BaseModel):
                 ))
                 sys.stdout.flush()
                 
-                # Note, we can't just look at fresh genotypes, because all may
-                # have been marked as stale prior to population.
-                #valid_genotypes = self.valid_genotypes
-                valid_genotypes = Genotype.objects.filter(valid=True, fitness__isnull=False).filter(genome=self)
-                random_valid_genotypes = valid_genotypes.order_by('?')
-                last_pending = pending
-                creation_type = random.randint(1,11)
-                print 'creation_type:',creation_type
-                print 'valid_genotypes:',valid_genotypes.count()
-                for retry in xrange(max_retries):
-                    try:
-                        print 'Sub-attempt %i of %i.' % (retry+1, max_retries)
+                if populate_method == c.POPULATE_ALL:
+                    # Populate all possible genotypes by simply iterating over
+                    # all possible gene value combinations.
+                    # Note, as this bypasses selection and mutation, you should
+                    # only do this for trivially small genomes during the
+                    # initial population stage.
+                    print 'Populating all genotypes.'
+                    prior_fingerprints = set(self.genotypes.all().values_list('fingerprint', flat=True))
+                    element_sets = []
+                    element_names = []
+                    for gene in self.genes.all():
+                        if not gene.is_discrete():
+                            continue
+                        element_names.append(gene.name)
+                        element_sets.append(set(gene.get_values_list()))
+                    #print'element_sets:',element_sets
+                    comb_iter = utils.iter_elements(element_sets, rand=True)
+                    i = 0
+                    j = self.genotypes.count()
+                    for comb in comb_iter:
+                        i += 1
+                        try:
+                            attrs = dict(zip(element_names, comb))
+                            fp = get_fingerprint(attrs)
+                            if fp in prior_fingerprints:
+                                continue
+                            prior_fingerprints.add(fp)
+                            #print fp, attrs
+                            print 'Creating genotype %i of %i...' % (i, maximum_population-j)
+                            new_genotype = self.create_genotype_from_dict(attrs)
+                            new_genotype.fingerprint = None
+                            new_genotype.fingerprint_fresh = False
+                            # Might raise fingerprint conflict error?
+                            new_genotype.save(check_fingerprint=True)
+                            transaction.commit()
+                            # Check for stopping criteria.
+                            if self.genotypes.count() >= maximum_population:
+                                print 'Maximum theoretical population has been reached.'
+                                #sys.exit()#TODO:remove
+                                break
+                        except FingerprintConflictError, e:
+                            # We catch these to explicitly ignore.
+                            print>>sys.stderr, '!'*80
+                            print>>sys.stderr, 'FingerprintConflictError: %s' % (e,)
+                            sys.stderr.flush()
+                            #connection._rollback()
+                            transaction.rollback()
+                        except ValidationError, e:
+                            # We catch these to explicitly ignore.
+                            print>>sys.stderr, '!'*80
+                            print>>sys.stderr, 'Validation Error: %s' % (e,)
+                            sys.stderr.flush()
+                            #connection._rollback()
+                            transaction.rollback()
+                        except IntegrityError, e:
+                            # We catch these to explicitly ignore.
+                            print>>sys.stderr, '!'*80
+                            print>>sys.stderr, 'Integrity Error: %s' % (e,)
+                            sys.stderr.flush()
+                            #connection._rollback()
+                            transaction.rollback()
+                        except Exception, e:
+                            # These we catch to ensure the transaction is cleanly,
+                            # rolled back, but otherwise we want it to continue.
+                            transaction.rollback()
+                            raise
                         
-                        # Create a new genotype in one of three ways.
-                        if valid_genotypes.count() <= 1 or creation_type == 1:
-                            new_genotype = self.create_random_genotype()
-                        elif valid_genotypes.count() >= 2 and creation_type < 5:
-                            a = utils.weighted_choice(
-                                random_valid_genotypes,
-                                get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
-                                get_weight=lambda o:o.fitness)
-                            b = utils.weighted_choice(
-                                random_valid_genotypes,
-                                get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
-                                get_weight=lambda o:o.fitness)
-                            new_genotype = self.create_hybrid_genotype(a, b)
-                        else:
-                            new_genotype = self.create_mutant_genotype(random_valid_genotypes[0])
-                        
-                        self.add_missing_genes(new_genotype)
-                        new_genotype.fingerprint = None
-                        new_genotype.fingerprint_fresh = False
-                        
-                        # Might raise fingerprint conflict error.
-                        new_genotype.save(check_fingerprint=True)
-                        
-                        transaction.commit()
-                        break
-                    except ValidationError, e:
-                        # We catch these to explicitly ignore.
-                        print>>sys.stderr, '!'*80
-                        print>>sys.stderr, 'Validation Error: %s' % (e,)
-                        sys.stderr.flush()
-                        #connection._rollback()
-                        transaction.rollback()
-                    except IntegrityError, e:
-                        # We catch these to explicitly ignore.
-                        print>>sys.stderr, '!'*80
-                        print>>sys.stderr, 'Integrity Error: %s' % (e,)
-                        sys.stderr.flush()
-                        #connection._rollback()
-                        transaction.rollback()
-                    except Exception, e:
-                        # These we catch to ensure the transaction is cleanly,
-                        # rolled back, but otherwise we want it to continue.
-                        transaction.rollback()
-                        raise
-                
+                else:
+                    
+                    # Note, we can't just look at fresh genotypes, because all may
+                    # have been marked as stale prior to population.
+                    #valid_genotypes = self.valid_genotypes
+                    valid_genotypes = Genotype.objects.filter(valid=True, fitness__isnull=False).filter(genome=self)
+                    random_valid_genotypes = valid_genotypes.order_by('?')
+                    last_pending = pending
+                    creation_type = random.randint(1,11)
+                    print 'creation_type:',creation_type
+                    print 'valid_genotypes:',valid_genotypes.count()
+                    for retry in xrange(max_retries):
+                        try:
+                            print 'Sub-attempt %i of %i.' % (retry+1, max_retries)
+                            
+                            # Create a new genotype in one of three ways.
+                            if valid_genotypes.count() <= 1 or creation_type == 1:
+                                new_genotype = self.create_random_genotype()
+                            elif valid_genotypes.count() >= 2 and creation_type < 5:
+                                a = utils.weighted_choice(
+                                    random_valid_genotypes,
+                                    get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
+                                    get_weight=lambda o:o.fitness)
+                                b = utils.weighted_choice(
+                                    random_valid_genotypes,
+                                    get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
+                                    get_weight=lambda o:o.fitness)
+                                new_genotype = self.create_hybrid_genotype(a, b)
+                            else:
+                                new_genotype = self.create_mutant_genotype(random_valid_genotypes[0])
+                            
+                            self.add_missing_genes(new_genotype)
+                            new_genotype.fingerprint = None
+                            new_genotype.fingerprint_fresh = False
+                            
+                            # Might raise fingerprint conflict error.
+                            new_genotype.save(check_fingerprint=True)
+                            
+                            transaction.commit()
+                            break
+                        except ValidationError, e:
+                            # We catch these to explicitly ignore.
+                            print>>sys.stderr, '!'*80
+                            print>>sys.stderr, 'Validation Error: %s' % (e,)
+                            sys.stderr.flush()
+                            #connection._rollback()
+                            transaction.rollback()
+                        except IntegrityError, e:
+                            # We catch these to explicitly ignore.
+                            print>>sys.stderr, '!'*80
+                            print>>sys.stderr, 'Integrity Error: %s' % (e,)
+                            sys.stderr.flush()
+                            #connection._rollback()
+                            transaction.rollback()
+                        except Exception, e:
+                            # These we catch to ensure the transaction is cleanly,
+                            # rolled back, but otherwise we want it to continue.
+                            transaction.rollback()
+                            raise
+                    
         finally:
             transaction.commit()
             transaction.leave_transaction_management()
@@ -1748,6 +1844,7 @@ class Genome(BaseModel):
     def evolve(self,
         genotype_id=None,
         populate=True,
+        populate_method=None,
         population=0,
         evaluate=True,
         epoches=0,
@@ -1812,7 +1909,7 @@ class Genome(BaseModel):
                 # results in gene loss.
                 if populate:
                     print 'Populating...'
-                    self.populate(population=population)
+                    self.populate(population=population, populate_method=populate_method)
                     
                     # Ensure all new genotypes have a valid fingerprint.
                     if cleanup:
@@ -3058,9 +3155,9 @@ class Genotype(models.Model):
     natural_key.dependencies = ['genome']
 
     def get_fingerprint(self):
-        return obj_to_hash(tuple(sorted(
+        return get_fingerprint(dict(
             (gene.gene.name, gene.value)
-            for gene in self.genes.all())
+            for gene in self.genes.all()
         ))
     
     @property

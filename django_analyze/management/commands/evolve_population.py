@@ -21,6 +21,7 @@ class Command(BaseCommand):
         make_option('--genotype', default=0),
         make_option('--genome', default=''),
         make_option('--populate', action='store_true', default=False),
+        make_option('--populate-method', default=None),
         make_option('--population', default=0),
         make_option('--evaluate', action='store_true', default=False),
         make_option('--epoches', default=0),
@@ -64,6 +65,7 @@ class Command(BaseCommand):
             
     def evolve(self, genome_id, genotype_id=None, **kwargs):
         populate = kwargs['populate']
+        populate_method = kwargs['populate_method']
         evaluate = kwargs['evaluate']
         force_reset = kwargs['force_reset']
         population = int(kwargs['population'])
@@ -72,6 +74,7 @@ class Command(BaseCommand):
         genome.evolve(
             genotype_id=genotype_id,
             populate=populate,
+            populate_method=populate_method,
             population=population,
             evaluate=evaluate,
             force_reset=force_reset,
