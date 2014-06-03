@@ -1828,6 +1828,8 @@ class Genome(BaseModel):
         This attempts to fix some common problems caused by adding, removing,
         or editing gene values to existing genotypes.
         """
+        genotype_ids = genotype_ids or []
+        genotype_ids = [_ for _ in genotype_ids if _]
         
         if create:
             print 'Adding missing genes...'
@@ -1888,7 +1890,7 @@ class Genome(BaseModel):
                     .update(evaluating=False, evaluating_pid=None)
                 
                 if cleanup:
-                    self.cleanup()
+                    self.cleanup(genotype_ids=[genotype_id])
                     
                 # Only cycle epoches if we've completely evaluated all
                 # genotypes in the previous epoche.
@@ -1913,7 +1915,7 @@ class Genome(BaseModel):
                     
                     # Ensure all new genotypes have a valid fingerprint.
                     if cleanup:
-                        self.cleanup()
+                        self.cleanup(genotype_ids=[genotype_id])
                 else:
                     print 'Skipping population.'
                 
@@ -3378,10 +3380,12 @@ class Genotype(models.Model):
         self = instance
         self.genome.save()
     
-    def getattr(self, name):
+    def getattr(self, name, default=None):
         q = self.genes.filter(gene__name=name)
         if q.exists():
             return q[0].value
+        if default is not None:
+            return default
         q = self.genome.genes.filter(name=name)
         if q.exists():
             raise Exception, ('Gene "%s" exists on the genome, but has not '\
