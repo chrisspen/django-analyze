@@ -50,7 +50,7 @@ APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
 import constants as c
 import utils
 
-from sklearn.externals import joblib
+#from sklearn.externals import joblib
 
 from admin_steroids.utils import get_admin_change_url
 
@@ -464,39 +464,42 @@ class Predictor(BaseModel, MaterializedView):
         help_text=_('''Additional seconds that should be added to the
             evaluation time, due to caching of shared resources.'''))
     
-    #classifier = PickledObjectField(blank=True, null=True)
-    _predictor = models.TextField(
+    #_predictor = models.TextField(
+    _predictor = PickledObjectField(
         blank=True,
         null=True,
+        compress=True,
         editable=False,
         db_column='classifier',
         help_text=_('The serialized model for use in production.'))
     
     @property
     def predictor(self):
-        data = self._predictor
-        if data:
-            _, fn = tempfile.mkstemp()
-            fout = open(fn, 'wb')
-            fout.write(b64decode(data))
-            fout.close()
-            obj = joblib.load(fn)
-            os.remove(fn)
-            return obj
-        else:
-            return
+        return self._predictor
+#        if data:
+#            _, fn = tempfile.mkstemp()
+#            fout = open(fn, 'wb')
+#            fout.write(b64decode(data))
+#            fout.close()
+#            obj = joblib.load(fn)
+#            os.remove(fn)
+#            return obj
+#        else:
+#            return
         
     @predictor.setter
     def predictor(self, v):
-        if v:
-            _, fn = tempfile.mkstemp()
-            joblib.dump(v, fn, compress=9)
-            fin = open(fn, 'rb')
-            self._predictor = b64encode(fin.read())
-            fin.close()
-            os.remove(fn)
-        else:
-            self._predictor = None
+        self._predictor = v
+        #TODO:buggy? doesn't return a simple single-file that we can store!?
+#        if v:
+#            _, fn = tempfile.mkstemp()
+#            joblib.dump(v, fn, compress=9)
+#            fin = open(fn, 'rb')
+#            self._predictor = b64encode(fin.read())
+#            fin.close()
+#            os.remove(fn)
+#        else:
+#            self._predictor = None
     
     empirical_classification_count = models.PositiveIntegerField(
         default=0,
