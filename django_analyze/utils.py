@@ -27,6 +27,15 @@ def get_stderr_fn(pid):
 def is_power_of_two(x):
     return (x & (x - 1)) == 0
 
+def normalize_list(a, new_lower=0, new_upper=1):
+    min_value = min(a)
+    max_value = max(a)
+    d0 = max_value - min_value
+    d1 = new_upper - new_lower
+    a = [(_-min_value)/float(d0)*d1+new_lower for _ in a]
+    s = sum(a)
+    return [_/float(s) for _ in a]
+
 def ilog(n, base):
     """
     Find the integer log of n with respect to the base.
