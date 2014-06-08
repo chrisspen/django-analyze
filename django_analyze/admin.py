@@ -235,6 +235,11 @@ class GenomeAdmin(BaseModelAdmin):
         'is_production_ready',
     )
     
+    list_display_links = (
+        'id',
+        'name',
+    )
+    
     list_filter = (
         'evolving',
         'production_at_best',
