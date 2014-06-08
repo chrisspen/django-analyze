@@ -3342,7 +3342,10 @@ class Genotype(models.Model):
             self.epoche_of_creation = self.genome.epoche
         
         if self.id:
-            old = type(self).objects.get(id=self.id)
+            try:
+                old = type(self).objects.get(id=self.id)
+            except type(self).DoesNotExist:
+                old = None
             
             self.gene_count = self.genes.all().count()
             
