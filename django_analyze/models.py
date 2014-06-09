@@ -1093,7 +1093,7 @@ class Genome(BaseModel):
         total_processes = cpu_count()
         mean_max_memory_usage = self.mean_max_memory_usage # bytes
         if mean_max_memory_usage is None:
-            return total_processes
+            return 1 #total_processes
         max_memory_usage_ratio = self.max_memory_usage_ratio
 #        print'mean_max_memory_usage:',mean_max_memory_usage/1024./1024./1024.
         free_memory = psutil.virtual_memory().available # bytes
@@ -2966,14 +2966,14 @@ class Genotype(models.Model):
         help_text=_('''A list of periodic memory usage measurements during
             evaluation. Used to calculate the mean memory usage.'''))
     
-    mean_memory_usage = models.PositiveIntegerField(
+    mean_memory_usage = models.BigIntegerField(
         blank=True,
         null=True,
         editable=False,
         help_text=_('''The average amount of memory in bytes consumed
             at any given point in time during the evaluation.'''))
     
-    max_memory_usage = models.PositiveIntegerField(
+    max_memory_usage = models.BigIntegerField(
         blank=True,
         null=True,
         editable=False,
