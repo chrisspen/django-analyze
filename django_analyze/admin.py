@@ -335,6 +335,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'max_species',
                 'delete_inferiors',
                 'elite_ratio',
+                'max_memory_usage_ratio',
             )
         }),
     )

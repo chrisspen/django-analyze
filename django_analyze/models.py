@@ -13,9 +13,14 @@ import random
 import re
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import urllib
+
+from multiprocessing import Process, Queue, Lock, cpu_count, Pool
+
+import psutil
 
 from picklefield.fields import PickledObjectField
 
@@ -1049,6 +1054,15 @@ class Genome(BaseModel):
             are modified.'''),
     )
     
+    max_memory_usage_ratio = models.FloatField(
+        default=0.5,
+        blank=False,
+        null=False,
+        help_text=_('''The maximum ratio of available memory used to estimate
+            how many processes to run. 1.0=all, 0.5=half, etc.
+            Note, this requires at least one genotype having been successfully
+            evaluated and had its memory usage recorded.'''))
+    
     class Meta:
         app_label = APP_LABEL
         verbose_name = _('genome')
@@ -1060,6 +1074,33 @@ class Genome(BaseModel):
     def natural_key(self):
         return (self.name,)
     natural_key.dependencies = []
+    
+    @property
+    def mean_max_memory_usage(self):
+        """
+        The average maximum amount of memory used by all genotypes.
+        """
+        max_memory_usage__avg = self.genotypes.filter(
+            max_memory_usage__isnull=False
+        ).aggregate(Avg('max_memory_usage'))['max_memory_usage__avg']
+        return max_memory_usage__avg
+    
+    def get_evolve_processes(self):
+        """
+        Returns the maximum number of processes most appropriate to use
+        given memory usage constraints and the number of cores available.
+        """
+        total_processes = cpu_count()
+        mean_max_memory_usage = self.mean_max_memory_usage # bytes
+        if mean_max_memory_usage is None:
+            return total_processes
+        max_memory_usage_ratio = self.max_memory_usage_ratio
+#        print'mean_max_memory_usage:',mean_max_memory_usage/1024./1024./1024.
+        free_memory = psutil.virtual_memory().available # bytes
+        free_memory *= max_memory_usage_ratio
+#        print'free_memory:',free_memory/1024./1024./1024.
+        max_processes_by_memory = int(free_memory/float(mean_max_memory_usage))
+        return min(total_processes, max_processes_by_memory)
     
     def generate_error_report(self, force=False, save=True):
         if not force and self.error_report:
@@ -1862,20 +1903,23 @@ class Genome(BaseModel):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
         """
-        from multiprocessing import Process, Queue, Lock, cpu_count, Pool
-        
-        if not processes:
-            processes = cpu_count()
-        assert processes > 0
         
 #        assert not processes or utils.is_power_of_two(processes), \
 #            'Processes must be a power of 2.'
+        
+#        print 'mean_max_memory_usage:',self.mean_max_memory_usage
+#        print 'processes:',processes
+        processes = processes or self.get_evolve_processes()
+#        print 'processes:',processes
+        if not processes:
+            raise Exception, 'Not enough memory to run evaluate even one genotype. Free up more memory and re-run.'
+#        return
         
         tmp_debug = settings.DEBUG
         settings.DEBUG = False
         pid0 = os.getpid()
         max_epoches = epoches
-        print 'max epoches:',max_epoches
+#        print 'max epoches:',max_epoches
         passed_epoches = 0
         pool = None
         try:
@@ -1965,6 +2009,40 @@ class Genome(BaseModel):
                     # "server closed the connection unexpectedly"
                     connection.close()
                     
+                    def update_progress():
+                        connection.close()
+                        pid0 = os.getpid()
+                        while 1:
+                            if os.getpid() != pid0:
+                                return
+                            Genotype.objects.update()
+                            q = Genotype.objects.filter(genome__id=self.id)
+                            if genotype_id:
+                                q = q.filter(id=int(genotype_id))
+                            overall_total_count = q.count()
+                            overall_current_count = q.filter(fresh=True).count()
+                            
+                            Job.update_progress(
+                                total_parts_complete=overall_current_count,
+                                total_parts=overall_total_count,
+                            )
+                            progress.pid = pid0
+                            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+                            progress.seconds_until_timeout = 1e999999999999999
+                            progress.current_count = overall_current_count
+                            progress.total_count = overall_total_count
+                            alive_count = len(pool._pool) if pool else 0
+                            progress.write('EVOLVE: Evaluating %i genotypes.' % alive_count)
+                            progress.flush(force=True)
+                            
+                            time.sleep(10)
+                    
+                    # Start monitoring process status.
+                    t = threading.Thread(target=update_progress)
+                    t.daemon = True
+                    t.start()
+                    
+                    # Launch task processes.
                     print 'tasks:',len(tasks)
                     pool = Pool(processes=processes)
 #                    pool_iter = pool.imap_unordered(
@@ -2082,7 +2160,7 @@ class Genome(BaseModel):
             gt.error = None # This may be overriden
             gt.save()
             fitness_evaluation_datetime_start = timezone.now()
-            self.evaluator_function(gt, force_reset=force_reset, progress=progress)
+            self.evaluator_function(gt, force_reset=force_reset)#, progress=progress)
             print>>fout, 'Done evaluating genotype %s.' % (gt.id,)
             mt.stop = True
             mt.join()
@@ -2158,7 +2236,6 @@ class Genome(BaseModel):
                             % (self.id, dep_genome.id)
                     return False
         print 'Evaluating production genotype...'
-        #self.evaluator_function(genotype=self.production_genotype, test=False, progress=progress)
         t = Thread(
             target=self.evaluator_function,
             kwargs=dict(
