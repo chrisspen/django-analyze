@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError
 
 import constants as c
 import models
+import utils
 
 import admin_steroids
 import admin_steroids.options
@@ -523,6 +524,8 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
         'fitness',
 #        'mean_absolute_error',
 #        'accuracy',
+        'mean_memory_usage_str',
+        'max_memory_usage_str',
         'mean_evaluation_seconds',
         'total_evaluation_seconds',
         'success_ratio',
@@ -573,6 +576,8 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
         'total_evaluation_seconds',
         'gene_count',
         'fingerprint_bool',
+        'mean_memory_usage_str',
+        'max_memory_usage_str',
         'fingerprint',
         'fresh',
         'valid',
@@ -702,6 +707,18 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
 #    def __init__(self, *args, **kwargs):
 #        super(GenotypeAdmin, self).__init__(*args, **kwargs)
     
+    def mean_memory_usage_str(self, obj=None):
+        if not obj or not obj.mean_memory_usage:
+            return ''
+        return utils.sizeof_fmt(obj.mean_memory_usage)
+    mean_memory_usage_str.short_description = 'mean memory usage'
+    
+    def max_memory_usage_str(self, obj=None):
+        if not obj or not obj.max_memory_usage:
+            return ''
+        return utils.sizeof_fmt(obj.max_memory_usage)
+    max_memory_usage_str.short_description = 'max memory usage'
+    
     def genome_link(self, obj=None):
         if not obj:
             return ''
@@ -720,6 +737,7 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
                     genome_field,
                     'description',
                     'immortal',
+                    'fitness',
                     'genes_link',
                 ]
             }),
@@ -735,18 +753,9 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
                 ]
             }),
             ('Test status', {
+                'classes': ('collapse',),
                 'fields': [
-                    #'complete_ratio',
                     'complete_percent',
-                           
-                    'fitness',
-                    'fitness_evaluation_datetime_start',
-                    'fitness_evaluation_datetime',
-                    'mean_evaluation_seconds',
-                    'total_evaluation_seconds',
-                    'mean_absolute_error',
-                    #'accuracy',
-                    
                     'fresh',
                     'valid',
                     'error',
@@ -758,7 +767,21 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
                     'ontime_ratio',
                 ]
             }),
+            ('Test results', {
+                'classes': ('collapse',),
+                'fields': [
+                    'fitness_evaluation_datetime_start',
+                    'fitness_evaluation_datetime',
+                    'mean_memory_usage_str',
+                    'max_memory_usage_str',
+                    'mean_evaluation_seconds',
+                    'total_evaluation_seconds',
+                    'mean_absolute_error',
+                    #'accuracy',
+                ]
+            }),
             ('Production status', {
+                'classes': ('collapse',),
                 'fields': [
                     'production_complete_percent',
                     'production_fresh',
@@ -770,6 +793,11 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
                     'production_ontime_parts',
                     'production_success_ratio',
                     'production_ontime_ratio',
+                ]
+            }),
+            ('Production results', {
+                'classes': ('collapse',),
+                'fields': [
                     'production_evaluation_start_datetime',
                     'production_evaluation_end_datetime',
                     'production_evaluation_seconds',

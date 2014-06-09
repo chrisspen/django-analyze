@@ -13,6 +13,7 @@ from collections import defaultdict, OrderedDict
 
 from ctypes import c_double
 from multiprocessing.sharedctypes import Value
+from multiprocessing import Pool
 
 import psutil
 
@@ -26,6 +27,14 @@ def get_stderr_fn(pid):
 
 def is_power_of_two(x):
     return (x & (x - 1)) == 0
+
+#http://stackoverflow.com/questions/1094841/reusable-library-to-get-human-readable-version-of-file-size
+def sizeof_fmt(num):
+    for x in ['bytes','KB','MB','GB']:
+        if num < 1024.0:
+            return "%3.1f%s" % (num, x)
+        num /= 1024.0
+    return "%3.1f%s" % (num, 'TB')
 
 def normalize_list(a, new_lower=0, new_upper=1):
     min_value = min(a)
@@ -1052,3 +1061,28 @@ def iter_elements(element_sets, rand=False):
                 yield lst
         else:
             yield [el]
+
+class MemoryThread(threading.Thread):
+    """
+    Records the current process's memory usage every N seconds.
+    """
+    
+    def __init__(self, period=30, *args, **kwargs):
+        super(MemoryThread, self).__init__(*args, **kwargs)
+        self.pid = None
+        self.memory_history = []
+        self.stop = False
+        self.daemon = True
+        self.period = period
+    
+    def run(self):
+        self.pid = os.getpid()
+        p = psutil.Process(self.pid)
+        while not self.stop:
+            if os.getpid() != self.pid:
+                # Kill ourselves if we've been cloned.
+                return
+            self.memory_history.append(p.get_memory_info().rss)
+            print 'memory:',sizeof_fmt(self.memory_history[-1])
+            time.sleep(self.period)
+            

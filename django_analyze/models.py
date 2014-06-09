@@ -1,6 +1,9 @@
 
 from base64 import b64encode, b64decode
+from collections import defaultdict
 from datetime import timedelta
+from functools import partial
+from threading import Thread
 from StringIO import StringIO
 import gc
 import inspect
@@ -13,8 +16,6 @@ import tempfile
 import time
 import traceback
 import urllib
-from collections import defaultdict
-from threading import Thread
 
 from picklefield.fields import PickledObjectField
 
@@ -1857,16 +1858,15 @@ class Genome(BaseModel):
         continuous=False,
         cleanup=True,
         clear=True,
-        processes=1):
+        processes=None):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
         """
-        from multiprocessing import Process, Queue, Lock, cpu_count
-        
-        assert processes >= 0
+        from multiprocessing import Process, Queue, Lock, cpu_count, Pool
         
         if not processes:
             processes = cpu_count()
+        assert processes > 0
         
 #        assert not processes or utils.is_power_of_two(processes), \
 #            'Processes must be a power of 2.'
@@ -1877,6 +1877,7 @@ class Genome(BaseModel):
         max_epoches = epoches
         print 'max epoches:',max_epoches
         passed_epoches = 0
+        pool = None
         try:
             self.evolving = True
             self.evolution_start_datetime = timezone.now()
@@ -1931,75 +1932,84 @@ class Genome(BaseModel):
                     lock = Lock()
                     if genotype_id:
                         processes = 1
-                    if processes == 1:
-                        self.evaluate(
-                            lock=lock,
-                            #progress=progress,
-                            genotype_id=genotype_id,
+#                    if processes == 1:
+#                        self.evaluate(
+#                            lock=lock,
+#                            #progress=progress,
+#                            genotype_id=genotype_id,
+#                            force_reset=force_reset,
+#                        )
+#                    else:
+                    #FIXME:replace with multiprocessing.map or Pool?
+                    
+                    # Build task list.
+                    if force_reset:
+                        genotypes = self.genotypes.all()
+                    else:
+                        genotypes = self.pending_genotypes
+                    if genotype_id:
+                        genotypes = genotypes.filter(id=genotype_id)
+                    tasks = [
+                        dict(
+                            genotype_id=_.id,
+                            genome_id=self.id,
+                            progress=progress,
                             force_reset=force_reset,
                         )
-                    else:
-                        #FIXME:replace with multiprocessing.map or Pool?
-                        for _ in xrange(processes):
-                            django.db.connection.close()
-                            p = Process(
-                                target=self.evaluate,
-                                kwargs=dict(
-                                    lock=lock,
-                                    progress=progress,
-                                    genotype_id=genotype_id,
-                                    force_reset=force_reset,
-                                ))
-                            #p.daemon = True#breaks evaluate() launching processes of its own
-                            p.start()
-                            process_stack.append(p)
-                            
-                        # Wait for processes to end.
-                        while any(p for p in process_stack if p.is_alive()):
-                            alive = [p for p in process_stack if p.is_alive()]
-                            
-                            Genotype.objects.update()
-                            q = Genotype.objects.filter(genome__id=self.id)
-                            if genotype_id:
-                                q = q.filter(id=int(genotype_id))
-                            overall_total_count = q.count()
-                            overall_current_count = q.filter(fresh=True).count()
-    #                        from chroniker.models import get_current_heartbeat
-    #                        hb = get_current_heartbeat()
-    #                        print '!'*80
-    #                        import thread
-    #                        thread_ident = thread.get_ident()
-    #                        print 'thread0:',thread_ident
-    #                        print 'job_id0:',hb.job_id
-    #                        print 'pid0:',os.getpid()
-    #                        print 'total_parts0:',overall_total_count
-    #                        print 'total_parts_complete0:',overall_current_count
-    #                        print '!'*80
-                            Job.update_progress(
-                                total_parts_complete=overall_current_count,
-                                total_parts=overall_total_count,
-                            )
-                            progress.pid = os.getpid()#'EVOLVE'
-                            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
-                            progress.seconds_until_timeout = 1e999999999999999
-                            progress.current_count = overall_current_count
-                            progress.total_count = overall_total_count
-                            progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
-                            progress.flush(force=True)
-                            
-                            time.sleep(1)
+                        for _ in genotypes
+                    ]
+                    total_tasks = len(tasks)
+                    completed_tasks = 0
+                    
+                    # Required, otherwise we get a django.db.utils.OperationalError:
+                    # "server closed the connection unexpectedly"
+                    connection.close()
+                    
+                    print 'tasks:',len(tasks)
+                    pool = Pool(processes=processes)
+#                    pool_iter = pool.imap_unordered(
+#                        genome_evolve_pool_helper,
+#                        tasks)
+                    results = pool.map_async(genome_evolve_pool_helper, tasks).get(9999999)
+                    pool.close()
+                    pool.join()
+                    connection.close()
+#                    for _ in pool_iter:
+#                    #results = pool.map_async(process_helper, tasks).get(9999999)
+#                        completed_tasks += 1
+#                        
+##                        Genotype.objects.update()
+##                        q = Genotype.objects.filter(genome__id=self.id)
+##                        if genotype_id:
+##                            q = q.filter(id=int(genotype_id))
+##                        overall_total_count = q.count()
+##                        overall_current_count = q.filter(fresh=True).count()
+#                        
+#                        Job.update_progress(
+#                            total_parts_complete=completed_tasks,
+#                            total_parts=total_tasks,
+#                        )
+#                        progress.pid = os.getpid()#'EVOLVE'
+#                        progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+#                        progress.seconds_until_timeout = 1e999999999999999
+#                        progress.current_count = completed_tasks
+#                        progress.total_count = total_tasks
+#                        progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
+#                        progress.flush(force=True)
+                        
+                        #time.sleep(1)
                     
                     # Make final update.
-                    Genotype.objects.update()
-                    q = Genotype.objects.filter(genome__id=self.id)
-                    if genotype_id:
-                        q = q.filter(id=int(genotype_id))
-                    overall_total_count = q.count()
-                    overall_current_count = q.filter(fresh=True).count()
-                    Job.update_progress(
-                        total_parts_complete=overall_current_count,
-                        total_parts=overall_total_count,
-                    )
+#                    Genotype.objects.update()
+#                    q = Genotype.objects.filter(genome__id=self.id)
+#                    if genotype_id:
+#                        q = q.filter(id=int(genotype_id))
+#                    overall_total_count = q.count()
+#                    overall_current_count = q.filter(fresh=True).count()
+#                    Job.update_progress(
+#                        total_parts_complete=overall_current_count,
+#                        total_parts=overall_total_count,
+#                    )
                     
                     # Reload the current genome in case we've received updates.
                     Genome.objects.update()
@@ -2034,6 +2044,12 @@ class Genome(BaseModel):
                 # Clear the query cache to help reduce memory usage.
                 reset_queries()
         
+        except KeyboardInterrupt, e:
+            if pool:
+                pool.terminate()
+                pool.close()
+                pool.join()
+                
         finally:
             if pid0 == os.getpid():
                 self.evolving = False
@@ -2043,88 +2059,70 @@ class Genome(BaseModel):
                 connection.close()
         print 'Done.'
             
-    def evaluate(self, genotype_id=None, force_reset=False, lock=None, fout=None, progress=None):
+    def evaluate(self, genotype_id=None, force_reset=False, fout=None, progress=None):
         """
-        Calculates the fitness of all currently unevaluated genotypes
-        using the genome's linked fitness metric.
+        Calculates the fitness of a genotype.
         """
-        fout = fout or sys.stdout
+        fout = fout or sys.stdout#TODO:remove
+        #assert not isinstance(fout, utils.MultiProgress)
         if isinstance(fout, utils.MultiProgress):
             fout.pid = os.getpid()
-        while 1:
-            
-            # Build query to retrieve next genotype to evaluate.
-            if force_reset:
-                #print>>fout, 'Retrieving all genotypes...'
-                q = self.genotypes.all()
-            else:
-                #print>>fout, 'Retrieving pending genotypes...'
-                q = self.pending_genotypes
-            if genotype_id:
-                q = q.filter(id=genotype_id)
-            
-            # Retrieve the next genotype.
-            try:
-                #print 'lock:',lock
-                if lock:
-                    lock.acquire()
-                if q.exists():
-#                    try:
-                    Genotype.objects.update()
-                    gt = q[0]
-                    gt.reset()
-                    gt.evaluating = True
-                    gt.evaluating_pid = os.getpid()
-                    gt.fitness_evaluation_datetime_start = timezone.now()
-                    gt.save()
-#                    except FingerprintConflictError, e:
-#                        # In some rare cases, a genotype might be modified to
-#                        # that it conflicts without the fingerprint flag being
-#                        # marked stale. In this case, when we do to save it,
-                else:
-                    print>>fout, 'Nothing left to evaluate.'
-                    return
-            finally:
-                if lock:
-                    lock.release()
-            
-            # Run the backend evaluator.
-            try:
-                gt.error = None # This may be overriden
-                fitness_evaluation_datetime_start = timezone.now()
-                self.evaluator_function(gt, force_reset=force_reset, progress=progress)
-                print>>fout, 'Done evaluating genotype %s.' % (gt.id,)
-                gt = Genotype.objects.get(id=gt.id)
-                print>>fout, 'final fitness: %s' % (gt.fitness,)
-                gt.total_evaluation_seconds = None
-                gt.fitness_evaluation_datetime_start = fitness_evaluation_datetime_start
-                gt.fitness_evaluation_datetime = timezone.now()
-                gt.fresh = True # evaluated, even if failed
-                gt.evaluating = False
-                gt.evaluating_pid = None
-                gt.valid = not gt.error
-                gt.epoche_of_evaluation = self.epoche
-                gt.epoche = gt.genome.current_epoche
-                gt.save()
-                reset_queries()
-            except Exception, e:
-                print>>sys.stderr, 'Error evaluating genotype %i.' % (gt.id,)
-                fout = StringIO()
-                traceback.print_exc(file=fout)
-                error = fout.getvalue()
-                print>>sys.stderr, error
-                sys.stderr.flush()
-                django.db.connection.close()
-                Genotype.objects.filter(id=gt.id).update(
-                    fresh=True,
-                    valid=False,
-                    error=error,
-                    evaluating=False,
-                    evaluating_pid=None,
-                )
-                
-            if genotype_id:
-                return
+        
+        # Start tracking process memory usage.
+        mt = utils.MemoryThread()
+        mt.start()
+        
+        # Run the backend evaluator.
+        try:
+            gt = Genotype.objects.get(id=genotype_id)
+            gt.reset()
+            gt.evaluating = True
+            gt.evaluating_pid = os.getpid()
+            gt.fitness_evaluation_datetime_start = timezone.now()
+            gt.error = None # This may be overriden
+            gt.save()
+            fitness_evaluation_datetime_start = timezone.now()
+            self.evaluator_function(gt, force_reset=force_reset, progress=progress)
+            print>>fout, 'Done evaluating genotype %s.' % (gt.id,)
+            mt.stop = True
+            mt.join()
+            gt = Genotype.objects.get(id=gt.id)
+            print>>fout, 'final fitness: %s' % (gt.fitness,)
+            gt.memory_usage_samples = mt.memory_history
+            print>>fout, 'gt.memory_usage_samples:',gt.memory_usage_samples
+            gt.mean_memory_usage = None
+            if mt.memory_history:
+                gt.mean_memory_usage = int(sum(mt.memory_history)/float(len(mt.memory_history)))
+            print>>fout, 'gt.mean_memory_usage:',gt.mean_memory_usage
+            gt.max_memory_usage = None
+            if gt.memory_usage_samples:
+                gt.max_memory_usage = max(gt.memory_usage_samples)
+            gt.total_evaluation_seconds = None
+            gt.fitness_evaluation_datetime_start = fitness_evaluation_datetime_start
+            gt.fitness_evaluation_datetime = timezone.now()
+            gt.fresh = True # evaluated, even if failed
+            gt.evaluating = False
+            gt.evaluating_pid = None
+            gt.valid = not gt.error
+            gt.epoche_of_evaluation = self.epoche
+            gt.epoche = gt.genome.current_epoche
+            gt.save()
+            reset_queries()
+        except Exception, e:
+            print>>sys.stderr, 'Error evaluating genotype %i.' % (gt.id,)
+            fout = StringIO()
+            traceback.print_exc(file=fout)
+            error = fout.getvalue()
+            print>>sys.stderr, error
+            sys.stderr.flush()
+            django.db.connection.close()
+            Genotype.objects.filter(id=gt.id).update(
+                fresh=True,
+                valid=False,
+                error=error,
+                evaluating=False,
+                evaluating_pid=None,
+            )
             
     def production_evaluate(self):
         """
@@ -2179,6 +2177,26 @@ class Genome(BaseModel):
         self.production_genotype.production_fresh = prod_ready
         self.production_genotype.save()
         return prod_ready
+
+def genome_evolve_pool_helper(kwargs):
+    # Django is not multiprocessing safe, so we must manually close
+    # its database connection, otherwise each process will corrupt
+    # the other's queries.
+    print '!'*80
+    print'kwargs:',kwargs
+    connection.close()
+    
+    try:
+        genome_id = kwargs['genome_id']
+        del kwargs['genome_id']
+        genome = Genome.objects.only('id').get(id=genome_id)
+        return genome.evaluate(**kwargs)
+
+    except Exception, e:
+        print '!'*80
+        print 'Error:',e
+        traceback.print_exc(file=sys.stderr)
+        return e
 
 class EpocheManager(models.Manager):
     
@@ -2854,8 +2872,8 @@ class Genotype(models.Model):
         blank=True,
         null=True,
         editable=False,
-        help_text=_('''When an evaluate is composed of multiple parts,
-            represents the average evaluate time for each part.'''))
+        help_text=_('''When an evaluation is composed of multiple parts,
+            this stores the average time to evaluate each part.'''))
     
     total_evaluation_seconds = models.PositiveIntegerField(
         blank=True,
@@ -2863,6 +2881,27 @@ class Genotype(models.Model):
         editable=False,
         help_text=_('''The total time it last took to evaluate
             the genotype. This is set automatically.'''))
+    
+    memory_usage_samples = PickledObjectField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('''A list of periodic memory usage measurements during
+            evaluation. Used to calculate the mean memory usage.'''))
+    
+    mean_memory_usage = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('''The average amount of memory in bytes consumed
+            at any given point in time during the evaluation.'''))
+    
+    max_memory_usage = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_('''The maximum amount of memory in bytes consumed
+            at any given point in time during the evaluation.'''))
     
     #TODO:deprecated? genotype should only store fitness
     mean_absolute_error = models.FloatField(
