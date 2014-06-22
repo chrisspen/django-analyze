@@ -837,6 +837,9 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
         return view_related_link(obj, 'genes')
     genes_link.short_description = 'gene values'
     genes_link.allow_tags = True
+    
+    def lookup_allowed(self, key, value=None):
+        return True
 
 admin.site.register(models.Genotype, GenotypeAdmin)
 

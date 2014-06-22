@@ -21,6 +21,8 @@ def get_reqs():
         'scipy', # required by scikit-learn, takes a long time to build
         'scikit-learn',
         'django-picklefield',
+        
+        'joblib>=0.8.1',
     ]
 
 package_lookup = {

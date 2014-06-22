@@ -19,6 +19,7 @@ class Command(BaseCommand):
     help = 'Manages the genetic evolution of one or more genomes.'
     option_list = BaseCommand.option_list + (
         make_option('--genotype', default=0),
+        make_option('--genotypes', default=''),
         make_option('--genome', default=''),
         make_option('--populate', action='store_true', default=False),
         make_option('--populate-method', default=None),
@@ -43,11 +44,24 @@ class Command(BaseCommand):
         q = models.Genome.objects.all().only('id')
         if ids:
             q = q.filter(id__in=ids)
-            
+        
+        genotypes = []
+        
         genotype_id = int(options.get('genotype', 0))
         del options['genotype']
         if genotype_id:
             q = q.filter(genotypes__id=genotype_id)
+            genotypes.append(genotype_id)
+            
+        genotype_ids = [
+            int(_)
+            for _ in options.get('genotypes', '').split(',')
+            if _.isdigit()
+        ]
+        del options['genotypes']
+        if genotype_ids:
+            q = q.filter(genotypes__id=genotype_ids)
+            genotypes.extend(genotype_ids)
             
         total = q.count()
         print '%i genomes found.' % total
@@ -61,7 +75,10 @@ class Command(BaseCommand):
         
         for genome in list(q):
             i += 1
-            self.evolve(genome.id, genotype_id=genotype_id, **options)
+            self.evolve(
+                genome.id,
+                genotypes=genotypes,
+                **options)
             
     def evolve(self, genome_id, genotype_id=None, **kwargs):
         populate = kwargs['populate']

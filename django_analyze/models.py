@@ -40,6 +40,8 @@ from django.dispatch.dispatcher import Signal
 from django.core.signals import request_finished
 from django.dispatch import receiver
 
+from joblib import Parallel, delayed
+
 from django_materialized_views.models import MaterializedView
 
 try:
@@ -55,8 +57,6 @@ APP_LABEL = StringWithTitle('django_analyze', 'Analyze')
 
 import constants as c
 import utils
-
-#from sklearn.externals import joblib
 
 from admin_steroids.utils import get_admin_change_url
 
@@ -1971,8 +1971,7 @@ class Genome(BaseModel):
                 if evaluate:
                     
                     # Start processes.
-                    progress = utils.MultiProgress(clear=clear)
-                    process_stack = []
+                    #progress = utils.MultiProgress(clear=clear)
                     lock = Lock()
                     if genotype_id:
                         processes = 1
@@ -1985,29 +1984,6 @@ class Genome(BaseModel):
 #                        )
 #                    else:
                     #FIXME:replace with multiprocessing.map or Pool?
-                    
-                    # Build task list.
-                    if force_reset:
-                        genotypes = self.genotypes.all()
-                    else:
-                        genotypes = self.pending_genotypes
-                    if genotype_id:
-                        genotypes = genotypes.filter(id=genotype_id)
-                    tasks = [
-                        dict(
-                            genotype_id=_.id,
-                            genome_id=self.id,
-                            progress=progress,
-                            force_reset=force_reset,
-                        )
-                        for _ in genotypes
-                    ]
-                    total_tasks = len(tasks)
-                    completed_tasks = 0
-                    
-                    # Required, otherwise we get a django.db.utils.OperationalError:
-                    # "server closed the connection unexpectedly"
-                    connection.close()
                     
                     def update_progress():
                         connection.close()
@@ -2026,14 +2002,16 @@ class Genome(BaseModel):
                                 total_parts_complete=overall_current_count,
                                 total_parts=overall_total_count,
                             )
-                            progress.pid = pid0
-                            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
-                            progress.seconds_until_timeout = 1e999999999999999
-                            progress.current_count = overall_current_count
-                            progress.total_count = overall_total_count
-                            alive_count = len(pool._pool) if pool else 0
-                            progress.write('EVOLVE: Evaluating %i genotypes.' % alive_count)
-                            progress.flush(force=True)
+#                            progress.pid = pid0
+#                            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+#                            progress.seconds_until_timeout = 1e999999999999999
+#                            progress.current_count = overall_current_count
+#                            progress.total_count = overall_total_count
+                            alive_count = len(pool._pool) if pool else 0 # for multiprocessing.Pool
+                            #alive_count = len(pool._pool._pool) if pool else 0 #TODO:for joblib.Parallel?
+#                            progress.write('EVOLVE: Evaluating %i genotypes.' % alive_count)
+#                            progress.flush(force=True)
+                            print 'Evaluating %i of %i with %i active processes.' % (overall_current_count, overall_total_count, alive_count)
                             
                             time.sleep(10)
                     
@@ -2042,40 +2020,42 @@ class Genome(BaseModel):
                     t.daemon = True
                     t.start()
                     
+                    # Collect genotypes to evaluate.
+                    if force_reset:
+                        genotypes = self.genotypes.all()
+                    else:
+                        genotypes = self.pending_genotypes
+                    if genotype_id:
+                        genotypes = genotypes.filter(id=genotype_id)
+                    
+                    # Build task list.
+                    tasks = [
+                        delayed(self.evaluate)(**dict(
+                            genotype_id=_.id,
+                            #genome_id=self.id,
+                            #progress=progress,
+                            force_reset=force_reset,
+                        ))
+                        for _ in genotypes
+                    ]
+                    
+                    # Required, otherwise we get a django.db.utils.OperationalError:
+                    # "server closed the connection unexpectedly"
+                    connection.close()
+                    
                     # Launch task processes.
                     print 'tasks:',len(tasks)
-                    pool = Pool(processes=processes)
+                    #NOTE:still can't be killed with KeyboardInterrupt?!
+                    #pool = Pool(processes=processes)
 #                    pool_iter = pool.imap_unordered(
 #                        genome_evolve_pool_helper,
 #                        tasks)
-                    results = pool.map_async(genome_evolve_pool_helper, tasks).get(9999999)
-                    pool.close()
-                    pool.join()
+                    #results = pool.map_async(genome_evolve_pool_helper, tasks).get(9999999)
+                    #pool.close()
+                    #pool.join()
+                    pool = Parallel(n_jobs=processes, verbose=5)(_ for _ in tasks)
+                    
                     connection.close()
-#                    for _ in pool_iter:
-#                    #results = pool.map_async(process_helper, tasks).get(9999999)
-#                        completed_tasks += 1
-#                        
-##                        Genotype.objects.update()
-##                        q = Genotype.objects.filter(genome__id=self.id)
-##                        if genotype_id:
-##                            q = q.filter(id=int(genotype_id))
-##                        overall_total_count = q.count()
-##                        overall_current_count = q.filter(fresh=True).count()
-#                        
-#                        Job.update_progress(
-#                            total_parts_complete=completed_tasks,
-#                            total_parts=total_tasks,
-#                        )
-#                        progress.pid = os.getpid()#'EVOLVE'
-#                        progress.cpu = utils.get_cpu_usage(pid=os.getpid())
-#                        progress.seconds_until_timeout = 1e999999999999999
-#                        progress.current_count = completed_tasks
-#                        progress.total_count = total_tasks
-#                        progress.write('EVOLVE: Evaluating %i genotypes.' % len(alive))
-#                        progress.flush(force=True)
-                        
-                        #time.sleep(1)
                     
                     # Make final update.
 #                    Genotype.objects.update()
