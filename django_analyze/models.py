@@ -1889,7 +1889,7 @@ class Genome(BaseModel):
             self.delete_corrupt(genotype_ids=genotype_ids)
     
     def evolve(self,
-        genotype_id=None,
+        genotypes=None,
         populate=True,
         populate_method=None,
         population=0,
@@ -1922,6 +1922,7 @@ class Genome(BaseModel):
 #        print 'max epoches:',max_epoches
         passed_epoches = 0
         pool = None
+        genotype_ids = genotypes
         try:
             self.evolving = True
             self.evolution_start_datetime = timezone.now()
@@ -1938,7 +1939,7 @@ class Genome(BaseModel):
                     .update(evaluating=False, evaluating_pid=None)
                 
                 if cleanup:
-                    self.cleanup(genotype_ids=[genotype_id])
+                    self.cleanup(genotype_ids=genotype_ids)
                     
                 # Only cycle epoches if we've completely evaluated all
                 # genotypes in the previous epoche.
@@ -1959,11 +1960,13 @@ class Genome(BaseModel):
                 # results in gene loss.
                 if populate:
                     print 'Populating...'
-                    self.populate(population=population, populate_method=populate_method)
+                    self.populate(
+                        population=population,
+                        populate_method=populate_method)
                     
                     # Ensure all new genotypes have a valid fingerprint.
                     if cleanup:
-                        self.cleanup(genotype_ids=[genotype_id])
+                        self.cleanup(genotype_ids=genotype_ids)
                 else:
                     print 'Skipping population.'
                 
@@ -1973,17 +1976,6 @@ class Genome(BaseModel):
                     # Start processes.
                     #progress = utils.MultiProgress(clear=clear)
                     lock = Lock()
-                    if genotype_id:
-                        processes = 1
-#                    if processes == 1:
-#                        self.evaluate(
-#                            lock=lock,
-#                            #progress=progress,
-#                            genotype_id=genotype_id,
-#                            force_reset=force_reset,
-#                        )
-#                    else:
-                    #FIXME:replace with multiprocessing.map or Pool?
                     
                     def update_progress():
                         connection.close()
@@ -1993,8 +1985,8 @@ class Genome(BaseModel):
                                 return
                             Genotype.objects.update()
                             q = Genotype.objects.filter(genome__id=self.id)
-                            if genotype_id:
-                                q = q.filter(id=int(genotype_id))
+                            if genotype_ids:
+                                q = q.filter(id__in=genotype_ids)
                             overall_total_count = q.count()
                             overall_current_count = q.filter(fresh=True).count()
                             
@@ -2007,11 +1999,13 @@ class Genome(BaseModel):
 #                            progress.seconds_until_timeout = 1e999999999999999
 #                            progress.current_count = overall_current_count
 #                            progress.total_count = overall_total_count
-                            alive_count = len(pool._pool) if pool else 0 # for multiprocessing.Pool
+                            #alive_count = len(pool._pool._pool) if pool and pool._pool else None # for multiprocessing.Pool
                             #alive_count = len(pool._pool._pool) if pool else 0 #TODO:for joblib.Parallel?
 #                            progress.write('EVOLVE: Evaluating %i genotypes.' % alive_count)
 #                            progress.flush(force=True)
-                            print 'Evaluating %i of %i with %i active processes.' % (overall_current_count, overall_total_count, alive_count)
+                            #print 'pool:',pool,pool and pool._pool
+                            print ('-'*80)+'\n'+'Evaluating %i of %i with %i processes.\n'+('-'*80) \
+                                % (overall_current_count, overall_total_count, processes)
                             
                             time.sleep(10)
                     
@@ -2025,15 +2019,14 @@ class Genome(BaseModel):
                         genotypes = self.genotypes.all()
                     else:
                         genotypes = self.pending_genotypes
-                    if genotype_id:
-                        genotypes = genotypes.filter(id=genotype_id)
+                    if genotype_ids:
+                        genotypes = genotypes.filter(id__in=genotype_ids)
                     
                     # Build task list.
                     tasks = [
-                        delayed(self.evaluate)(**dict(
+                        delayed(genome_evolve_pool_helper)(**dict(
+                            genome_id=self.id,
                             genotype_id=_.id,
-                            #genome_id=self.id,
-                            #progress=progress,
                             force_reset=force_reset,
                         ))
                         for _ in genotypes
@@ -2053,7 +2046,8 @@ class Genome(BaseModel):
                     #results = pool.map_async(genome_evolve_pool_helper, tasks).get(9999999)
                     #pool.close()
                     #pool.join()
-                    pool = Parallel(n_jobs=processes, verbose=5)(_ for _ in tasks)
+                    pool = Parallel(n_jobs=processes, verbose=10)
+                    ret = pool(_ for _ in tasks)
                     
                     connection.close()
                     
@@ -2074,7 +2068,7 @@ class Genome(BaseModel):
                     genome = self = Genome.objects.get(id=self.id)
                     genome.generate_error_report(force=True, save=False)
                     genome.genotypes.filter(evaluating=True).update(evaluating=False)
-                    if not genotype_id:
+                    if not genotype_ids:
                         q = Epoche.objects.filter(index=genome.epoche, genome=genome)
                         if q.exists():
                             q[0].save(force_recalc=True)
@@ -2117,14 +2111,30 @@ class Genome(BaseModel):
                 connection.close()
         print 'Done.'
             
-    def evaluate(self, genotype_id=None, force_reset=False, fout=None, progress=None):
+    def evaluate(self, genotype_id, force_reset=False):
         """
         Calculates the fitness of a genotype.
         """
-        fout = fout or sys.stdout#TODO:remove
-        #assert not isinstance(fout, utils.MultiProgress)
-        if isinstance(fout, utils.MultiProgress):
-            fout.pid = os.getpid()
+        
+        class PrefixStream(object):
+            
+            def __init__(self, stream, prefix, *args, **kwargs):
+                self.stream = stream
+                self.prefix = str(prefix)
+                
+            def write(self, *args):
+                self.stream.write(self.prefix + ' '.join(map(str, args)))
+                
+            def flush(self):
+                self.stream.flush()
+                
+            def close(self):
+                self.stream.close()
+        
+        _stdout = sys.stdout
+        sys.stdout = PrefixStream(
+            stream=sys.stdout,
+            prefix='%i: ' % genotype_id)
         
         # Start tracking process memory usage.
         mt = utils.MemoryThread()
@@ -2141,17 +2151,17 @@ class Genome(BaseModel):
             gt.save()
             fitness_evaluation_datetime_start = timezone.now()
             self.evaluator_function(gt, force_reset=force_reset)#, progress=progress)
-            print>>fout, 'Done evaluating genotype %s.' % (gt.id,)
+            print 'Done evaluating genotype %s.' % (gt.id,)
             mt.stop = True
             mt.join()
             gt = Genotype.objects.get(id=gt.id)
-            print>>fout, 'final fitness: %s' % (gt.fitness,)
+            print 'final fitness: %s' % (gt.fitness,)
             gt.memory_usage_samples = mt.memory_history
-            print>>fout, 'gt.memory_usage_samples:',gt.memory_usage_samples
+            print 'memory_usage_samples:',gt.memory_usage_samples
             gt.mean_memory_usage = None
             if mt.memory_history:
                 gt.mean_memory_usage = int(sum(mt.memory_history)/float(len(mt.memory_history)))
-            print>>fout, 'gt.mean_memory_usage:',gt.mean_memory_usage
+            print 'mean_memory_usage:',gt.mean_memory_usage
             gt.max_memory_usage = None
             if gt.memory_usage_samples:
                 gt.max_memory_usage = max(gt.memory_usage_samples)
@@ -2181,6 +2191,8 @@ class Genome(BaseModel):
                 evaluating=False,
                 evaluating_pid=None,
             )
+        finally:
+            sys.stdout = _stdout
             
     def production_evaluate(self):
         """
@@ -2235,7 +2247,7 @@ class Genome(BaseModel):
         self.production_genotype.save()
         return prod_ready
 
-def genome_evolve_pool_helper(kwargs):
+def genome_evolve_pool_helper(**kwargs):
     # Django is not multiprocessing safe, so we must manually close
     # its database connection, otherwise each process will corrupt
     # the other's queries.

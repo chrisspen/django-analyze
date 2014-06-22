@@ -47,11 +47,14 @@ class Command(BaseCommand):
         
         genotypes = []
         
-        genotype_id = int(options.get('genotype', 0))
+        genotype_ids = [
+            int(_)
+            for _ in options.get('genotype', '').split(',')
+            if _.isdigit()
+        ]
         del options['genotype']
-        if genotype_id:
-            q = q.filter(genotypes__id=genotype_id)
-            genotypes.append(genotype_id)
+        if genotype_ids:
+            genotypes.extend(genotype_ids)
             
         genotype_ids = [
             int(_)
@@ -60,8 +63,11 @@ class Command(BaseCommand):
         ]
         del options['genotypes']
         if genotype_ids:
-            q = q.filter(genotypes__id=genotype_ids)
             genotypes.extend(genotype_ids)
+        
+        print('genotypes:',genotypes)
+        if genotypes:
+            q = q.filter(genotypes__id__in=genotypes)
             
         total = q.count()
         print '%i genomes found.' % total
@@ -80,7 +86,7 @@ class Command(BaseCommand):
                 genotypes=genotypes,
                 **options)
             
-    def evolve(self, genome_id, genotype_id=None, **kwargs):
+    def evolve(self, genome_id, genotypes=None, **kwargs):
         populate = kwargs['populate']
         populate_method = kwargs['populate_method']
         evaluate = kwargs['evaluate']
@@ -89,7 +95,7 @@ class Command(BaseCommand):
         genome = models.Genome.objects.get(id=genome_id)
         print 'Evolving genome %s.' % (genome.name,)
         genome.evolve(
-            genotype_id=genotype_id,
+            genotypes=genotypes,
             populate=populate,
             populate_method=populate_method,
             population=population,
