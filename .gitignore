@@ -2,3 +2,5 @@
 /.pydevproject
 /.env
 /.settings
+/dist
+*.egg-info
