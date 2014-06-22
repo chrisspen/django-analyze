@@ -1516,7 +1516,7 @@ class Genome(BaseModel):
             gt.delete()
         
         # Delete all genotype genes that are illegal.
-        genotype_ids = set()
+        processed_genotype_ids = set()
         q = GenotypeGeneIllegal.objects.filter(genotype__genome=self)
         if genotype_ids:
             q = q.filter(genotype__id__in=genotype_ids)
@@ -1530,10 +1530,10 @@ class Genome(BaseModel):
                 if isinstance(gt, int):
                     gt = Genotype.objects.get(id=gt)
                 gt.delete_illegal_genes(save=save)
-                genotype_ids.add(gt.id)
+                processed_genotype_ids.add(gt.id)
         # Note, by this point, some genotypes may have had enough genes removed
         # to make them identical to another genotype, causing a conflict.
-        Genotype.mark_stale(genotype_ids, save=save)
+        Genotype.mark_stale(processed_genotype_ids, save=save)
     
     def freshen_fingerprints(self, genotype_ids=[]):
         """

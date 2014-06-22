@@ -2,6 +2,8 @@ import sys
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+from django.db.transaction import commit_manually
 
 from optparse import make_option
 
@@ -13,9 +15,13 @@ class Command(BaseCommand):
     option_list = BaseCommand.option_list + (
         make_option('--genotypes', default=''),
         make_option('--genomes', default=''),
+        make_option('--dryrun', action='store_true', default=False),
     )
 
+    @commit_manually
     def handle(self, **options):
+        dryrun = options['dryrun']
+        
         q = models.Genome.objects.only('id').all()
         
         genome_ids = [int(_) for _ in options['genomes'].split(',') if _.isdigit()]
@@ -33,3 +39,8 @@ class Command(BaseCommand):
             i += 1
             genome.cleanup(genotype_ids=genotype_ids)
         
+        if dryrun:
+            transaction.rollback()
+        else:
+            transaction.commit()
+            
