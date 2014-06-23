@@ -1091,13 +1091,24 @@ class PrefixStream(object):
     def __init__(self, stream, prefix, *args, **kwargs):
         self.stream = stream
         self.prefix = str(prefix)
+        self.newline = True
         
     def write(self, *args):
-        self.stream.write(self.prefix + ' '.join(map(str, args)))
-        
+        if self.newline:
+            self.stream.write(self.prefix)
+        s = ' '.join(map(str, args))
+        self.stream.write(s)
+        self.newline = s and s[-1] == '\n'
+    
+#    def writelines(self, *args):
+#        self.stream.writelines(*args)
+    
     def flush(self):
         self.stream.flush()
-        
+    
+    def fileno(self):
+        return self.stream.fileno()
+    
     def close(self):
         self.stream.close()
         

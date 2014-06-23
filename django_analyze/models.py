@@ -1825,13 +1825,14 @@ class Genome(BaseModel):
             i = 0
             for missing in q:#.iterator():
                 i += 1
-                if i == 1 or not i % 10 or i == total:
-                    print '\rAdding gene value %i of %i...' % (i, total),
-                    sys.stdout.flush()
+                #if i == 1 or not i % 10 or i == total:
+                print 'Adding gene value %i of %i: %s...' \
+                    % (i, total, missing.gene_name)
+                #sys.stdout.flush()
                 _genotype_ids.add(missing.genotype_id)
                 #print 'adding missing:',missing.gene_name
                 missing.create()
-            print '\nDone!'
+            print 'Done!'
             sys.stdout.flush()
         if _genotype_ids:
             Genotype.mark_stale(_genotype_ids, save=save)
