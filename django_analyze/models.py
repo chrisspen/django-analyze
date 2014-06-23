@@ -69,12 +69,29 @@ def get_fingerprint(d):
 class FingerprintConflictError(ValidationError):
     pass
 
-def lookup_genome(id):
+def lookup_genome_genotypes(id, only_production=False):
+    """
+    Converts a genome_id to a list of exposed genotypes.
+    """
     try:
-        return Genome.objects.get(id=int(id))
+        if isinstance(id, basestring) and len(id.split(':')) == 2:
+            genome_id, genotype_id = id.split(':')
+            return Genotype.objects.only('id').filter(
+                genome__id=int(genome_id), id=int(genotype_id))
+        else:
+            if only_production:
+                return Genotype.objects.only('id').filter(
+                    Q(genome__id=int(id)) & Q(production_genomes__id__isnull=False)
+                )
+            else:
+                return Genotype.objects.only('id').filter(
+                    Q(genome__id=int(id)) & Q(Q(production_genomes__id__isnull=False)|Q(export=True))
+                )
     except ValueError:
         pass
     except TypeError:
+        pass
+    except Genotype.DoesNotExist:
         pass
     except Genome.DoesNotExist:
         pass
@@ -84,7 +101,7 @@ str_to_type = {
     c.GENE_TYPE_FLOAT:float,
     c.GENE_TYPE_BOOL:(lambda v: True if v in (True, 'True', 1, '1') else False),
     c.GENE_TYPE_STR:(lambda v: str(v)),
-    c.GENE_TYPE_GENOME:lookup_genome,
+    c.GENE_TYPE_GENOME:lookup_genome_genotypes,
 }
 
 _global_fingerprint_check = [True]
@@ -2004,7 +2021,7 @@ class Genome(BaseModel):
 #                            progress.write('EVOLVE: Evaluating %i genotypes.' % alive_count)
 #                            progress.flush(force=True)
                             #print 'pool:',pool,pool and pool._pool
-                            print ('-'*80)+'\n'+'Evaluating %i of %i with %i processes.\n'+('-'*80) \
+                            print (('-'*80)+'\n'+'Evaluating %i of %i with %i processes.\n'+('-'*80)) \
                                 % (overall_current_count, overall_total_count, processes)
                             
                             time.sleep(10)
@@ -2116,23 +2133,8 @@ class Genome(BaseModel):
         Calculates the fitness of a genotype.
         """
         
-        class PrefixStream(object):
-            
-            def __init__(self, stream, prefix, *args, **kwargs):
-                self.stream = stream
-                self.prefix = str(prefix)
-                
-            def write(self, *args):
-                self.stream.write(self.prefix + ' '.join(map(str, args)))
-                
-            def flush(self):
-                self.stream.flush()
-                
-            def close(self):
-                self.stream.close()
-        
         _stdout = sys.stdout
-        sys.stdout = PrefixStream(
+        sys.stdout = utils.PrefixStream(
             stream=sys.stdout,
             prefix='%i: ' % genotype_id)
         
@@ -2699,12 +2701,40 @@ class Gene(BaseModel):
         if auto_update:
             type(self).objects.filter(id=self.id).update(coverage_ratio=ratio)
         self.update_mutation_weight(auto_update=auto_update)
-    
+
+    def clean(self, *args, **kwargs):
+        """
+        Called to validate fields before saving.
+        Override this to implement your own model validation
+        for both inside and outside of admin. 
+        """
+        try:
+            
+            values_list = self.get_values_list()
+            default_value = self.get_default(allow_random=False)
+            if values_list is not None and default_value is not None:
+                if default_value not in values_list:
+                    raise ValidationError({
+                        'default': ['Default must one of the allowed values.'],
+                    })
+            
+            super(Gene, self).clean(*args, **kwargs)
+        except Exception, e:
+#            print '!'*80
+#            print e
+            raise
+
+    def full_clean(self, *args, **kwargs):
+        return self.clean(*args, **kwargs)
+
     def save(self, *args, **kwargs):
         old = None
         if self.id:
             old = type(self).objects.get(id=self.id)
             self.update_coverage(auto_update=False)
+            
+        self.full_clean()
+            
         super(Gene, self).save(*args, **kwargs)
         
         schema_change = False
@@ -2817,15 +2847,28 @@ class Gene(BaseModel):
         else:
             raise NotImplementedError, 'Unknown type: %s' % (self.type,)
     
-    def get_default(self):
+    def get_default(self, allow_random=True):
         if self.default is None:
-            return self.get_random_value()
-        return str_to_type[self.type](self.default)
+            if allow_random:
+                return self.get_random_value()
+            return
+            
+        if self.type == c.GENE_TYPE_GENOME:
+            default = str_to_type[self.type](self.default, only_production=True)
+            if default:
+                return default[0]
+            else:
+                return
+        else:
+            default = str_to_type[self.type](self.default)
+            
+        return default
     
     def get_values_list(self, as_text=False):
         """
         Returns a list of allowable values for this gene.
-        If gene value starts with "source:package.module.attribute", will dynamically lookup this list.
+        If gene value starts with "source:package.module.attribute",
+        will dynamically lookup this list.
         """
         values = (self.values or '').strip()
         if not values:
@@ -2841,7 +2884,15 @@ class Gene(BaseModel):
         assert isinstance(lst, (tuple, list))
         if as_text:
             return lst
-        return [str_to_type[self.type](_) for _ in lst]
+            
+        lst = [str_to_type[self.type](_) for _ in lst]
+        
+        # If a gene storing a link to a genotype, flatten a list
+        # of genotype lists.
+        if self.type == c.GENE_TYPE_GENOME:
+            lst = [item for sublist in lst for item in sublist]
+            
+        return lst
 
 class GenotypeManager(models.Manager):
 
@@ -3043,6 +3094,12 @@ class Genotype(models.Model):
         db_index=True,
         help_text=_('If true, indicates this predictor has been evaluated.'))
     
+    export = models.BooleanField(
+        default=False,
+        #editable=False,
+        db_index=True,
+        help_text=_('If true, indicates this genotype may be used by other genomes.'))
+        
     valid = models.BooleanField(
         default=True,
         #editable=False,
@@ -3676,6 +3733,15 @@ class GenotypeGene(BaseModel):
     _value_genome = models.ForeignKey(
         Genome,
         on_delete=models.SET_NULL,
+        related_name='genotype_genes',
+        editable=False,
+        blank=True,
+        null=True)
+    
+    _value_genotype = models.ForeignKey(
+        Genotype,
+        on_delete=models.SET_NULL,
+        related_name='genotype_genes',
         editable=False,
         blank=True,
         null=True)
@@ -3698,7 +3764,8 @@ class GenotypeGene(BaseModel):
     natural_key.dependencies = ['django_analyze.Genotype', 'django_analyze.Gene']
     
     def __unicode__(self):
-        return '<GenotypeGene:%s %s=%s>' % (self.id, self.gene.name, self._value)
+        return '<GenotypeGene:%s %s=%s>' \
+            % (self.id, self.gene.name, self._value)
     
     @property
     def value(self):
@@ -3717,16 +3784,36 @@ class GenotypeGene(BaseModel):
         elif self.gene.type == c.GENE_TYPE_STR:
             return self._value
         elif self.gene.type == c.GENE_TYPE_GENOME:
-            return Genome.objects.get(id=int(self._value))
+            parts = self._value.split(':')
+            if len(parts) == 2:
+                return Genotype.objects.get(
+                    genome__id=int(parts[0]),
+                    id=int(parts[1]))
+            else:
+                return Genome.objects.get(id=int(parts[0])).production_genotype
         return self._value
     
     @value.setter
     def value(self, v):
-        if not isinstance(v, c.GENE_TYPES) or not isinstance(v, Genome):
+        self._value_genome = None
+        self._value_genotype = None
+        valid_types = set(c.GENE_TYPES)
+        valid_types.update([Genome, Genotype])
+        if not isinstance(v, tuple(valid_types)):
             raise NotImplementedError, 'Unsupported type: %s' % type(v)
         elif self.gene.type == c.GENE_TYPE_GENOME:
-            self._value = str(v.id)
-            self._value_genome = v
+            if isinstance(v, Genome):
+                # Implicitly uses the production genotype.
+                self._value = str(v.id)
+                self._value_genome = v
+                self._value_genotype = None
+            elif isinstance(v, Genotype):
+                # Explicitly uses a genotype.
+                self._value = '%i:%i' % (v.genome.id, v.id)
+                self._value_genome = v.genome
+                self._value_genotype = v
+            else:
+                raise NotImplementedError
         else:
             self._value = str(v)
             self._value_genome = None
@@ -3764,12 +3851,22 @@ class GenotypeGene(BaseModel):
             try:
                 #print 'self._value:',self._value
                 value = str_to_type[self.gene.type](self._value)
+                
+                if self.gene.type == c.GENE_TYPE_GENOME and value is not None:
+                    value = value[0]
+                
                 #print 'value:',value
                 if self.gene.values:
                     values = self.gene.get_values_list()
                     if value not in values:
                         raise ValidationError({
-                            '_value': ['Value must be one of %s, not %s.' % (', '.join(map(str, values)), repr(value))],
+                            '_value': [
+                                'Value must be one of %s, not %s.' \
+                                    % (
+                                        ', '.join(map(str, values)),
+                                        repr(value),
+                                    )
+                            ],
                         })
             except ValueError:
                 raise ValidationError({

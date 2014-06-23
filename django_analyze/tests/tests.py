@@ -224,4 +224,58 @@ class Tests(TestCase):
         illegal = models.GenotypeGeneIllegal.objects.filter(genotype=gt1)
         #print 'illegal:',[_.illegal_gene_name for _ in illegal.all()]
         self.assertEqual(illegal.count(), 1)
+    
+    def test_genome_gene(self):
+        
+        # Create client genome.
+        g0 = models.Genome(name='g0')
+        g0.save()
+        g0_test = models.Gene.objects.create(
+            genome=g0,
+            name='test',
+            type=c.GENE_TYPE_INT,
+            values='1,2,3',
+            default='1')
+        
+        # Create child genome genotypes.
+        g01 = models.Genotype.objects.create(genome=g0)
+        models.GenotypeGene.objects.create(genotype=g01, gene=g0_test, _value='1')
+        g01.export = True
+        g01.save()
+        g02 = models.Genotype.objects.create(genome=g0)
+        models.GenotypeGene.objects.create(genotype=g02, gene=g0_test, _value='2')
+        
+        # Set one genotype as the production genotype.
+        g0.production_genotype = g02
+        g0.save()
+        
+        # Create parent genome.
+        g1 = models.Genome(name='g1')
+        g1.save()
+        g1_test = models.Gene.objects.create(
+            genome=g1,
+            name='test',
+            type=c.GENE_TYPE_GENOME,
+            values=str(g0.id),
+            default=str(g0.id))
+        
+        default = g1_test.get_default()
+        #print default
+        self.assertEqual(default.id, 2)
+        values = g1_test.get_values_list()
+        self.assertEqual(set(_.id for _ in values), set([1, 2]))
+        #print values
+        
+        # Create parent genotype pointing to a child genotype.
+        g11 = models.Genotype.objects.create(genome=g1)
+        g11_test = models.GenotypeGene(genotype=g11, gene=g1_test)
+        g11_test.value = g02
+        g11_test.save()
+        g11.save()
+        self.assertEqual(g11_test._value, '%i:%i' % (g0.id, g02.id))
+        
+        # Confirm the gene pointing to a specific child genotype returns
+        # a reference to that genotype.
+        child_gt = g11.getattr('test')
+        self.assertEqual(child_gt, g02)
         

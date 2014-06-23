@@ -189,7 +189,15 @@ class GeneAdmin(BaseModelAdmin):
     def values_str(self, obj=None):
         if not obj:
             return
-        return (obj.values or '').replace(',', ', ')
+        #return (obj.values or '').replace(',', ', ')
+        _lst = obj.get_values_list() or []
+        lst = []
+        for _ in _lst:
+            if isinstance(_, models.Genotype):
+                lst.append('%i:%i' % (_.genome.id, _.id))
+            else:
+                lst.append(str(_))
+        return ', '.join(lst)
     values_str.short_description = 'values'
     values_str.admin_order_field = 'values'
     
@@ -300,7 +308,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'genes_link',
                 'genestats_link',
                 'species_link',
-                'genotypes_link',
+                #'genotypes_link',
                 'epoches_link',
             )
         }),
@@ -515,9 +523,10 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
     
     list_display = (
         'id',
-        'immortal',
         'fresh',
         'valid',
+        'immortal',
+        'export',
         'description',
         'genome',
         'status',
@@ -546,6 +555,7 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
         'valid',
         'evaluating',
         'immortal',
+        'export',
         ('fitness', NullListFilter),
         ('fingerprint', NullListFilter),
         'fingerprint_fresh',
@@ -738,6 +748,7 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
                     genome_field,
                     'description',
                     'immortal',
+                    'export',
                     'fitness',
                     'genes_link',
                 ]

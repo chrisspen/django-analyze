@@ -1085,4 +1085,19 @@ class MemoryThread(threading.Thread):
             self.memory_history.append(p.get_memory_info().rss)
             print 'memory:',sizeof_fmt(self.memory_history[-1])
             time.sleep(self.period)
-            
+
+class PrefixStream(object):
+    
+    def __init__(self, stream, prefix, *args, **kwargs):
+        self.stream = stream
+        self.prefix = str(prefix)
+        
+    def write(self, *args):
+        self.stream.write(self.prefix + ' '.join(map(str, args)))
+        
+    def flush(self):
+        self.stream.flush()
+        
+    def close(self):
+        self.stream.close()
+        
