@@ -1491,16 +1491,6 @@ class Genome(BaseModel):
     def valid_genotypes(self):
         return Genotype.objects.valid().filter(genome=self)
     
-    def is_production_ready(self):
-        if not self.production_genotype:
-            return False
-        for dependent_genome in self.get_dependent_genomes():
-            if not dependent_genome.is_production_ready():
-                return False
-        return self.is_production_ready_function(genotype=self.production_genotype)
-    is_production_ready.boolean = True
-    is_production_ready.short_description = 'production ready'
-    
     def get_dependent_genomes(self):
         """
         Returns a list of genomes this genome depends on for current
@@ -1512,10 +1502,28 @@ class Genome(BaseModel):
         genes = self.production_genotype.genes
         q = genes.filter(gene__type=c.GENE_TYPE_GENOME)
         for ggene in q.iterator():
-            genome = ggene.value
-            if genome:
+            #genome = ggene.value
+            #print genome, type(genome)
+            genome_id = (ggene._value or '').split(':')
+            if not genome_id:
+                continue
+            genome_id = int(genome_id[0])
+            try:
+                genome = Genome.objects.get(id=genome_id)
                 a.add(genome)
+            except Genome.DoesNotExist:
+                continue
         return a
+    
+    def is_production_ready(self):
+        if not self.production_genotype:
+            return False
+        for dependent_genome in self.get_dependent_genomes():
+            if not dependent_genome.is_production_ready():
+                return False
+        return self.is_production_ready_function(genotype=self.production_genotype)
+    is_production_ready.boolean = True
+    is_production_ready.short_description = 'production ready'
     
     def delete_corrupt(self, genotype_ids=[], save=True):
         """
@@ -1851,7 +1859,11 @@ class Genome(BaseModel):
         keep_ids = [_.id for _ in q[:keep_n]]
         if self.production_genotype:
             keep_ids.append(self.production_genotype.id)
-        q = self.genotypes.exclude(id__in=keep_ids).exclude(immortal=True).only('id')
+        q = self.genotypes\
+            .exclude(id__in=keep_ids)\
+            .exclude(immortal=True)\
+            .exclude(genotype_genes_referrers__id__isnull=False)\
+            .only('id')
         total = q.count()
         print '%i inferior genotypes to delete.' % total
         i = 0
@@ -3734,7 +3746,7 @@ class GenotypeGene(BaseModel):
     _value_genome = models.ForeignKey(
         Genome,
         on_delete=models.SET_NULL,
-        related_name='genotype_genes',
+        related_name='genotype_gene_referrers',
         editable=False,
         blank=True,
         null=True)
@@ -3742,7 +3754,7 @@ class GenotypeGene(BaseModel):
     _value_genotype = models.ForeignKey(
         Genotype,
         on_delete=models.SET_NULL,
-        related_name='genotype_genes',
+        related_name='genotype_genes_referrers',
         editable=False,
         blank=True,
         null=True)

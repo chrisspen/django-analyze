@@ -1,3 +1,6 @@
+import sys
+import traceback
+
 from django.http import HttpResponse, HttpResponseRedirect
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
@@ -308,7 +311,7 @@ class GenomeAdmin(BaseModelAdmin):
                 'genes_link',
                 'genestats_link',
                 'species_link',
-                #'genotypes_link',
+                'genotypes_link',
                 'epoches_link',
             )
         }),
@@ -418,6 +421,7 @@ class GenomeAdmin(BaseModelAdmin):
                 template='{count} invalid') + '&nbsp;' + \
             ('<a href="%s" class="button" target="_blank">Add</a>' % (get_admin_changelist_url(models.Genotype)+'add/?genome='+str(obj.id),))
         except Exception, e:
+            traceback.print_exc(file=sys.stdout)
             return str(e)
     genotypes_link.allow_tags = True
     genotypes_link.short_description = 'genotypes'
