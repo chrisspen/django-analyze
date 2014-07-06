@@ -20,10 +20,17 @@ class Command(BaseCommand):
             '--exclude-genotypes',
             action='store_true',
             default=False),
+        make_option(
+            '--genotypes',
+            default=''),
     )
 
     def handle(self, genome_id, **options):
         genome_id = int(genome_id)
+        genotype_ids = [
+            int(_)
+            for _ in options['genotypes'].split(',')
+            if _.strip().isdigit()]
         queries = []
         
         def to_json_str(obj):
@@ -56,12 +63,15 @@ class Command(BaseCommand):
         if not options['exclude_genotypes']:
             
             # Genotypes.
-            queries.append(models.Genotype.objects.filter(
-                genome__id=genome_id))
+            genotype_q = models.Genotype.objects.filter(
+                genome__id=genome_id)
+            if genotype_ids:
+                genotype_q = genotype_q.filter(id__in=genotype_ids)
+            queries.append(genotype_q)
         
             # Genotype gene values.
             queries.append(models.GenotypeGene.objects.filter(
-                genotype__genome__id=genome_id))
+                genotype__in=genotype_q))
         
         total = sum([_q.count() for _q in queries])
         i = 0
@@ -69,16 +79,16 @@ class Command(BaseCommand):
         for q in queries:
             for obj in q.iterator():
                 i += 1
-                if not i % 10:
+                if i == 1 or not i % 10 or i == total:
                     print>>sys.stderr, '\r%i of %i (%.02f%%)' \
                         % (i, total, float(i)/total*100),
                     sys.stderr.flush()
                 
                 # In certain cases where there's a cyclic reference on a model
                 # we're not including, we must temporarily break the reference.
-                if options['exclude_genotypes'] \
-                and hasattr(obj, 'production_genotype'):
+                if isinstance(obj, models.Genome):
                     obj.production_genotype = None
+                    obj._epoche = None
                     
                 first = i == 1
                 last = i == total

@@ -278,4 +278,13 @@ class Tests(TestCase):
         # a reference to that genotype.
         child_gt = g11.getattr('test')
         self.assertEqual(child_gt, g02)
+    
+    def test_normalize_list(self):
+        a = [-0.37, -0.08, 0.76, 7.73]
+        #print(a)
+        b = utils.normalize_list(a)
+        #print(b)
+        self.assertEqual(
+            b,
+            [0.0, 0.03580246913580247, 0.13950617283950617, 1.0])
         

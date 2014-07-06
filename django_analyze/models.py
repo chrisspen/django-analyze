@@ -742,11 +742,6 @@ class Species(BaseModel):
             self.index = self.genome.species.all().count() + 1
         super(Species, self).save(*args, **kwargs)
 
-class GenomeManager(models.Manager):
-    
-    def get_by_natural_key(self, name):
-        return self.get_or_create(name=name)[0]
-
 def did_genotype_change(gt1, gt2):
     """
     Returns true if the given genotype changed in a manner requiring a Genome
@@ -841,6 +836,12 @@ class GenomeBackendMixin(object):
         Implementation REQUIRED.
         """
         raise NotImplementedError
+
+class GenomeManager(models.Manager):
+    
+    def get_by_natural_key(self, name):
+        #print 'GenomeManager:',name
+        return self.get_or_create(name=name)[0]
 
 class Genome(BaseModel):
     """
@@ -1480,6 +1481,8 @@ class Genome(BaseModel):
             if ggene.gene.name in mutated_genes:
                 old_value = new_gene._value
                 new_gene._value = ggene.gene.get_random_value()
+#                if ggene.gene.type == c.GENE_TYPE_GENOME:
+#                    genome_id = Genome.objects.get(genotypes__id=int(new_gene._value))
                 #print 'Mutating gene %s from %s to %s.' % (ggene.gene.name, old_value, new_gene._value)
             new_ggenes.append(new_gene)
         
@@ -1710,8 +1713,16 @@ class Genome(BaseModel):
                     # Note, we can't just look at fresh genotypes, because all may
                     # have been marked as stale prior to population.
                     #valid_genotypes = self.valid_genotypes
-                    valid_genotypes = Genotype.objects.filter(valid=True, fitness__isnull=False).filter(genome=self)
+                    valid_genotypes = Genotype.objects.filter(
+                        valid=True, fitness__isnull=False).filter(genome=self)
                     random_valid_genotypes = valid_genotypes.order_by('?')
+                    random_valid_genotype_keys = list(random_valid_genotypes)
+                    random_valid_genotype_weights = utils.normalize_list(
+                        [_.fitness for _ in random_valid_genotype_items])
+                    random_valid_genotype_choices = zip(
+                        random_valid_genotype_keys,
+                        random_valid_genotype_weights)
+                    
                     last_pending = pending
                     creation_type = random.randint(1,11)
                     print 'creation_type:',creation_type
@@ -1725,13 +1736,17 @@ class Genome(BaseModel):
                                 new_genotype = self.create_random_genotype()
                             elif valid_genotypes.count() >= 2 and creation_type < 5:
                                 a = utils.weighted_choice(
-                                    random_valid_genotypes,
-                                    get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
-                                    get_weight=lambda o:o.fitness)
+                                    random_valid_genotype_choices,
+#                                    random_valid_genotypes,
+#                                    get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
+#                                    get_weight=lambda o:o.fitness
+                                )
                                 b = utils.weighted_choice(
-                                    random_valid_genotypes,
-                                    get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
-                                    get_weight=lambda o:o.fitness)
+                                    random_valid_genotype_choices,
+#                                    random_valid_genotypes,
+#                                    get_total=lambda: valid_genotypes.aggregate(Sum('fitness'))['fitness__sum'],
+#                                    get_weight=lambda o:o.fitness
+                                )
                                 new_genotype = self.create_hybrid_genotype(a, b)
                             else:
                                 new_genotype = self.create_mutant_genotype(random_valid_genotypes[0])
@@ -1929,6 +1944,7 @@ class Genome(BaseModel):
         continuous=False,
         cleanup=True,
         clear=True,
+        progress=True,
         processes=None):
         """
         Runs a one or more cycles of genotype deletion, generation and evaluation.
@@ -2007,10 +2023,12 @@ class Genome(BaseModel):
                     #progress = utils.MultiProgress(clear=clear)
                     lock = Lock()
                     
+                    keep_updating_progress = True
+                    
                     def update_progress():
                         connection.close()
                         pid0 = os.getpid()
-                        while 1:
+                        while keep_updating_progress:
                             if os.getpid() != pid0:
                                 return
                             Genotype.objects.update()
@@ -2040,9 +2058,11 @@ class Genome(BaseModel):
                             time.sleep(10)
                     
                     # Start monitoring process status.
-                    t = threading.Thread(target=update_progress)
-                    t.daemon = True
-                    t.start()
+                    progress_thread = None
+                    if progress:
+                        progress_thread = threading.Thread(target=update_progress)
+                        progress_thread.daemon = True
+                        progress_thread.start()
                     
                     # Collect genotypes to evaluate.
                     if force_reset:
@@ -2067,7 +2087,7 @@ class Genome(BaseModel):
                     connection.close()
                     
                     # Launch task processes.
-                    print 'tasks:',len(tasks)
+#                    print 'tasks:',len(tasks)
                     #NOTE:still can't be killed with KeyboardInterrupt?!
                     #pool = Pool(processes=processes)
 #                    pool_iter = pool.imap_unordered(
@@ -2076,10 +2096,16 @@ class Genome(BaseModel):
                     #results = pool.map_async(genome_evolve_pool_helper, tasks).get(9999999)
                     #pool.close()
                     #pool.join()
+#                    print 'processes:',processes
+#                    print 'genotypes:',genotypes.count()
+                    processes = min(processes, genotypes.count())
                     pool = Parallel(n_jobs=processes, verbose=10)
                     ret = pool(_ for _ in tasks)
                     
                     connection.close()
+                    
+                    keep_updating_progress = False
+                    progress_thread.join()
                     
                     # Make final update.
 #                    Genotype.objects.update()
@@ -2559,6 +2585,7 @@ class GeneDependency(BaseModel):
 class GeneManager(models.Manager):
     
     def get_by_natural_key(self, name, *args, **kwargs):
+        #print 'GeneManager:',name,args,kwargs
         genome = Genome.objects.get_by_natural_key(*args, **kwargs)
         return self.get_or_create(name=name, genome=genome)[0]
 
@@ -2709,7 +2736,9 @@ class Gene(BaseModel):
     def update_coverage(self, auto_update=True):
         possible_value_count = self.get_max_value_count()
         actual_values = set(self.gene_values.all().values_list('_value', flat=True).distinct())
-        ratio = len(actual_values)/float(possible_value_count)
+        ratio = None
+        if possible_value_count:
+            ratio = len(actual_values)/float(possible_value_count)
         self.coverage_ratio = ratio
         if auto_update:
             type(self).objects.filter(id=self.id).update(coverage_ratio=ratio)
@@ -2834,6 +2863,10 @@ class Gene(BaseModel):
     def get_random_value(self):
         values_list = self.get_values_list()
         if values_list:
+            if self.type == c.GENE_TYPE_GENOME:
+                values_list = [
+                    '%i:%i' % (_.genome.id, _.id)
+                    for _ in values_list]
             return random.choice(values_list)
         elif self.type == c.GENE_TYPE_INT:
             assert (self.min_value and self.max_value) or (self.default and self.max_increment)
@@ -2910,6 +2943,7 @@ class Gene(BaseModel):
 class GenotypeManager(models.Manager):
 
     def get_by_natural_key(self, fingerprint, *args, **kwargs):
+        #print 'GenotypeManager:',fingerprint,args,kwargs
         genome = Genome.objects.get_by_natural_key(*args, **kwargs)
         return self.get_or_create(fingerprint=fingerprint, genome=genome)[0]
 
@@ -3577,7 +3611,15 @@ class Genotype(models.Model):
         else:
             raise Exception, \
                 'No gene "%s" exists in genome %s.' % (name, self.genome.id)
-        
+    
+    def setattr(self, name, value):
+        q = self.genes.filter(gene__name=name)
+        if not q.exists():
+            raise Exception, 'Genotype does not have a gene named %s' % (name,)
+        gg = q[0]
+        gg._value = str(value)
+        gg.save()
+    
     def as_dict(self):
         return dict((gene.gene.name, gene.value) for gene in self.genes.all())
     
@@ -3720,6 +3762,7 @@ class GenotypeGeneMissing(BaseModel):
 class GenotypeGeneManager(models.Manager):
     
     def get_by_natural_key(self, fingerprint, genome_name, gene_name, genome_name2):
+        #print 'GenotypeGeneManager:',fingerprint, genome_name, gene_name, genome_name2
         genotype = Genotype.objects.get_by_natural_key(fingerprint, genome_name)
         gene = Gene.objects.get_by_natural_key(gene_name, genome_name2)
         return self.get_or_create(genotype=genotype, gene=gene)[0]

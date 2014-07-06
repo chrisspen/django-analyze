@@ -36,14 +36,11 @@ def sizeof_fmt(num):
         num /= 1024.0
     return "%3.1f%s" % (num, 'TB')
 
-def normalize_list(a, new_lower=0, new_upper=1):
-    min_value = min(a)
-    max_value = max(a)
-    d0 = max_value - min_value
-    d1 = new_upper - new_lower
-    a = [(_-min_value)/float(d0)*d1+new_lower for _ in a]
-    s = sum(a)
-    return [_/float(s) for _ in a]
+def normalize_list(lst, new_lower=0, new_upper=1):
+    min_value = min(lst)
+    max_value = max(lst)
+    r = float(max_value - min_value)
+    return [((x - min_value) / r)*(new_upper - new_lower) + new_lower for x in lst]
 
 def ilog(n, base):
     """

@@ -18,7 +18,7 @@ class Command(BaseCommand):
     args = ''
     help = 'Manages the genetic evolution of one or more genomes.'
     option_list = BaseCommand.option_list + (
-        make_option('--genotype', default=0),
+        make_option('--genotype', default=''),
         make_option('--genotypes', default=''),
         make_option('--genome', default=''),
         make_option('--populate', action='store_true', default=False),
