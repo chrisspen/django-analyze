@@ -3912,7 +3912,7 @@ class GenotypeGene(BaseModel):
                 value = str_to_type[self.gene.type](self._value)
                 
                 if self.gene.type == c.GENE_TYPE_GENOME and value is not None:
-                    if str(self._value).split(':') != 2:
+                    if len(str(self._value).split(':')) != 2:
                         raise ValidationError({
                             '_value': [
                                 ('Value of type genome must be formatted '
