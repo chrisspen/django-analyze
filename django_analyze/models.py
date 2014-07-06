@@ -1425,9 +1425,9 @@ class Genome(BaseModel):
         # so we can quickly access them below.
         all_values = defaultdict(list) # {gene:[values]}
         for gene in genotypeA.genes.all():
-            all_values[gene.gene].append(gene.value)
+            all_values[gene.gene].append(gene._value)
         for gene in genotypeB.genes.all():
-            all_values[gene.gene].append(gene.value)
+            all_values[gene.gene].append(gene._value)
             
         # Note, crossover may result in many invalid or duplicate genotypes,
         # so we can't check the fingerprint until the gene selection
@@ -1435,7 +1435,8 @@ class Genome(BaseModel):
         priors = {}
         # Order independent genes first so we don't automatically ignore
         # dependent genes just because we haven't added their dependee yet.
-        genes = all_values.iterkeys()#sorted(all_values.iterkeys(), key=lambda gene: gene.dependee_gene)
+        genes = all_values.iterkeys()
+        #sorted(all_values.iterkeys(), key=lambda gene: gene.dependee_gene)
         ggenes = []
         for gene in genes:
             if not self.is_allowable_gene(priors=priors, next_gene=gene):
@@ -3840,7 +3841,9 @@ class GenotypeGene(BaseModel):
         elif self.gene.type == c.GENE_TYPE_STR:
             return self._value
         elif self.gene.type == c.GENE_TYPE_GENOME:
+            #print('value0:',self._value)
             parts = self._value.split(':')
+            #print('value1:',self._value)
             if len(parts) == 2:
                 return Genotype.objects.get(
                     genome__id=int(parts[0]),
@@ -3909,6 +3912,14 @@ class GenotypeGene(BaseModel):
                 value = str_to_type[self.gene.type](self._value)
                 
                 if self.gene.type == c.GENE_TYPE_GENOME and value is not None:
+                    if str(self._value).split(':') != 2:
+                        raise ValidationError({
+                            '_value': [
+                                ('Value of type genome must be formatted '
+                                'like genome_id:genotype_id, not %s.') \
+                                    % (self._value)
+                            ],
+                        })
                     value = value[0]
                 
                 #print 'value:',value
