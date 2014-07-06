@@ -1718,7 +1718,7 @@ class Genome(BaseModel):
                     random_valid_genotypes = valid_genotypes.order_by('?')
                     random_valid_genotype_keys = list(random_valid_genotypes)
                     random_valid_genotype_weights = utils.normalize_list(
-                        [_.fitness for _ in random_valid_genotype_items])
+                        [_.fitness for _ in random_valid_genotype_keys])
                     random_valid_genotype_choices = zip(
                         random_valid_genotype_keys,
                         random_valid_genotype_weights)
