@@ -1523,7 +1523,7 @@ class Genome(BaseModel):
                 continue
         return a
     
-    def is_production_ready(self, genotype=None):
+    def is_production_ready(self, genotype=None, as_bool=False):
         genotype = genotype or self.production_genotype
         if not genotype:
             return False
@@ -1535,8 +1535,12 @@ class Genome(BaseModel):
             sub_ret = dependee_genome.is_production_ready(genotype=dependee_genotype)
             is_ready = ret_to_ready(sub_ret)
             if not is_ready:
+                if as_bool:
+                    return is_ready
                 return sub_ret
         ret = self.is_production_ready_function(genotype=genotype)
+        if as_bool:
+            return ret_to_ready(ret)
         return ret
     is_production_ready.boolean = True
     is_production_ready.short_description = 'production ready'

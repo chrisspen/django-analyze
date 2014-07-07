@@ -244,7 +244,7 @@ class GenomeAdmin(BaseModelAdmin):
         #'evolution_start_datetime',
         
         'production_at_best',
-        'is_production_ready',
+        'is_production_ready_bool',
     )
     
     list_display_links = (
@@ -280,7 +280,7 @@ class GenomeAdmin(BaseModelAdmin):
         'genestats_link',
         'evolution_start_datetime',
         'production_at_best',
-        'is_production_ready',
+        'is_production_ready_bool',
         'error_report_str',
         
         'total_genotype_count',
@@ -330,7 +330,7 @@ class GenomeAdmin(BaseModelAdmin):
         ('Production', {
             'fields': (
                 'production_at_best',
-                'is_production_ready',
+                'is_production_ready_bool',
                 'production_genotype_auto',
                 'production_genotype',
                 'production_evaluation_timeout',
@@ -350,6 +350,14 @@ class GenomeAdmin(BaseModelAdmin):
             )
         }),
     )
+    
+    def is_production_ready_bool(self, obj=None):
+        if not obj:
+            return
+        ret = obj.is_production_ready(as_bool=True)
+        return ret
+    is_production_ready_bool.boolean = True
+    is_production_ready_bool.short_description = 'production ready'
     
     def error_report_str(self, obj=None):
         try:
