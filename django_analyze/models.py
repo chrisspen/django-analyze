@@ -42,7 +42,11 @@ from django.dispatch import receiver
 
 from joblib import Parallel, delayed
 
-from django_materialized_views.models import MaterializedView
+try:
+    from django_materialized_views.models import MaterializedView
+except ImportError:
+    class MaterializedView(object):
+        pass
 
 try:
     from chroniker.models import Job

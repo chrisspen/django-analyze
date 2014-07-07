@@ -49,10 +49,10 @@ possible fitness and increasing value representing increasing levels of
 suitability. Personally, I find it convenience and intuitive to bound fitness
 between 0 and 1, but this is not strictly enforced.
 
-You tehn set this function in your `Genome's` `evaluator` field and run
+You then set this function in your `Genome's` `evaluator` field and run
 the management command:
 
-    python manage.py anaylze_evolve <genome_id>
+    python manage.py evolve_population --genome=<genome_id>
 
 Depending on the other settings in the genome, this will run for a maximum
 predetermined number of iterations or until improvement of the fitness has
@@ -60,7 +60,7 @@ stalled. From the genome's admin change page, you can browse the list of
 generated genotypes and inspect their fitness, possibly selecting one for
 production use.
 
-For example, a trivially simple genome might consist of a single gene called
+For example, a simple genome might consist of a single gene called
 `algorithm`, which contains one of several algorithm names
 (e.g. 'Bayesian', 'LinearSVC', 'RandomForest', etc.). You would write your
 evaluation function to read this string and instantiate the appropriate class
