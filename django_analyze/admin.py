@@ -642,6 +642,8 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
         'check_fingerprint',
         'mark_fresh',
         'mark_stale',
+        'mark_valid',
+        'mark_invalid',
 #        'refresh',
         'refresh_fitness',
         'reset',
@@ -683,6 +685,20 @@ class GenotypeAdmin(admin_steroids.options.BetterRawIdFieldsModelAdmin):
         messages.success(request, '%i genotypes were marked as fresh.' % i)
         return HttpResponseRedirect(request.META['HTTP_REFERER'])
     mark_fresh.short_description = 'Mark selected %(verbose_name_plural)s as fresh'
+    
+    def mark_valid(self, request, queryset):
+        queryset.update(valid=True)
+        i = queryset.count()
+        messages.success(request, '%i genotypes were marked as valid.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    mark_valid.short_description = 'Mark selected %(verbose_name_plural)s as valid'
+    
+    def mark_invalid(self, request, queryset):
+        queryset.update(valid=False)
+        i = queryset.count()
+        messages.success(request, '%i genotypes were marked as invalid.' % i)
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    mark_invalid.short_description = 'Mark selected %(verbose_name_plural)s as invalid'
     
     def refresh_fitness(self, request, queryset):
         i = 0

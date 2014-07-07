@@ -843,6 +843,11 @@ class GenomeManager(models.Manager):
         #print 'GenomeManager:',name
         return self.get_or_create(name=name)[0]
 
+def ret_to_ready(v):
+    if isinstance(v, (tuple, list)):
+        return v[0]
+    return bool(v)
+
 class Genome(BaseModel):
     """
     All possible parameters of a problem domain.
@@ -1495,37 +1500,44 @@ class Genome(BaseModel):
     def valid_genotypes(self):
         return Genotype.objects.valid().filter(genome=self)
     
-    def get_dependent_genomes(self):
+    def get_dependee_genomes(self, genotype=None):
         """
         Returns a list of genomes this genome depends on for current
         production use.
         """
-        if not self.production_genotype:
+        genotype = genotype or self.production_genotype
+        if not genotype:
             return []
         a = set()
-        genes = self.production_genotype.genes
+        genes = genotype.genes
         q = genes.filter(gene__type=c.GENE_TYPE_GENOME)
         for ggene in q.iterator():
-            #genome = ggene.value
-            #print genome, type(genome)
             genome_id = (ggene._value or '').split(':')
             if not genome_id:
                 continue
             genome_id = int(genome_id[0])
             try:
                 genome = Genome.objects.get(id=genome_id)
-                a.add(genome)
+                a.add((ggene.gene.name, genome))
             except Genome.DoesNotExist:
                 continue
         return a
     
-    def is_production_ready(self):
-        if not self.production_genotype:
+    def is_production_ready(self, genotype=None):
+        genotype = genotype or self.production_genotype
+        if not genotype:
             return False
-        for dependent_genome in self.get_dependent_genomes():
-            if not dependent_genome.is_production_ready():
-                return False
-        return self.is_production_ready_function(genotype=self.production_genotype)
+        genomes = self.get_dependee_genomes(genotype=genotype)
+        print('Genome %i has %i dependee genomes.' % (self.id, len(genomes)))
+        for gene_name, dependee_genome in genomes:
+            dependee_genotype = genotype.getattr(gene_name)
+            assert isinstance(dependee_genotype, Genotype)
+            sub_ret = dependee_genome.is_production_ready(genotype=dependee_genotype)
+            is_ready = ret_to_ready(sub_ret)
+            if not is_ready:
+                return sub_ret
+        ret = self.is_production_ready_function(genotype=genotype)
+        return ret
     is_production_ready.boolean = True
     is_production_ready.short_description = 'production ready'
     
@@ -2236,57 +2248,95 @@ class Genome(BaseModel):
         finally:
             sys.stdout = _stdout
             
-    def production_evaluate(self):
+    def production_evaluate(self, all=False, genotype=0):
         """
         Prepares the production genotype for production use.
         Does nothing if any dependent genomes are not ready.
         """
-        if not self.production_genotype:
-            print 'No production genotype set.'
+        #progress = utils.MultiProgress(clear=False)
+        
+        # Determine production genotype.
+        production_genotype = self.production_genotype
+        if genotype:
+            production_genotype = Genotype.objects.get(genome=self, id=genotype)
+        if not production_genotype:
+            print('No production genotype set.')
             return False
-        progress = utils.MultiProgress(clear=False)
-        prod_ready = self.is_production_ready()
-        self.production_genotype.production_fresh = prod_ready
-        self.production_genotype.save()
-        dep_genomes = list(self.get_dependent_genomes()) or None
-        print '\tproduction ready:',prod_ready
-        print '\tdependent genomes:',dep_genomes
-        #return
-#        if self.evolving:
-#            #TODO:allow if the production genotype has already been evaluated?
-#            print>>sys.stderr, 'Genome %i is currently evolving. Halt evolution before evaluating for production use.' % self.id
-#            return False
+        
+        # Determine of genotypes are evaluated and ready
+        # for production use.
+        prod_ready_ret = self.is_production_ready(genotype=production_genotype)
+        prod_ready = ret_to_ready(prod_ready_ret)
+        production_genotype.production_fresh = prod_ready
+        production_genotype.save()
+        dep_genomes = list(self.get_dependee_genomes()) or None
+        print('\tproduction ready:',prod_ready)
+        print('\tdependent genomes:',dep_genomes)
+        
         if prod_ready:
             # Don't evaluate if there's nothing to do.
-            print 'Genome is ready.'
+            print('Genome %i:%i is ready.' % (self.id, production_genotype.id))
             return True
         elif dep_genomes:
-            for dep_genome in dep_genomes:
-                if not dep_genome.is_production_ready():
-                    # Don't evaluate if we're dependent on another genome
-                    # that's not production ready.
-                    print>>sys.stderr, \
-                        'Genome %i depends on genome %i which is not ready.' \
-                            % (self.id, dep_genome.id)
-                    return False
-        print 'Evaluating production genotype...'
+            print('%i dependee genomes.' % len(dep_genomes))
+            for gene_name, dep_genome in dep_genomes:
+                dependee_genotype = production_genotype.getattr(gene_name)
+                print('Checking dependee genome %s with genotype %i...' \
+                    % (dep_genome, dependee_genotype.id))
+                is_dep_ready_ret = dep_genome.is_production_ready(
+                    genotype=dependee_genotype)
+                is_dep_ready = ret_to_ready(is_dep_ready_ret)
+                if is_dep_ready:
+                    print('Dependee genome %i with genotype %i is ready!' \
+                        % (dep_genome.id, dependee_genotype.id))
+                else:
+                    if all:
+                        # Refresh dependee if we're refreshing everything.
+                        dep_genome.production_evaluate(
+                            all=all,
+                            genotype=dependee_genotype)
+                        # Recheck.
+                        is_dep_ready_ret = dep_genome.is_production_ready(
+                            genotype=dependee_genotype)
+                        is_dep_ready = ret_to_ready(is_dep_ready_ret)
+                        
+                    if not is_dep_ready:
+                        # Don't evaluate if we're dependent on another genome
+                        # that's not production ready.
+                        print>>sys.stderr, \
+                            'Genome %i depends on %i:%i which is not ready: %s' \
+                                % (
+                                    self.id,
+                                    dep_genome.id,
+                                    dependee_genotype.id,
+                                    is_dep_ready_ret[-1])
+                        return False
+                    
+        print('Evaluating production genotype...')
         t = Thread(
             target=self.evaluator_function,
             kwargs=dict(
                 genotype=self.production_genotype,
                 test=False,
-                progress=progress,
+                #progress=progress,
             ))
         t.daemon = True
         t.start()
         while t.is_alive():
-            progress.pid = os.getpid()
-            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
-            progress.flush()
+#            progress.pid = os.getpid()
+#            progress.cpu = utils.get_cpu_usage(pid=os.getpid())
+#            progress.flush()
             time.sleep(1)
-        prod_ready = self.is_production_ready()
-        self.production_genotype.production_fresh = prod_ready
-        self.production_genotype.save()
+            
+        prod_ready_ret = self.is_production_ready(genotype=production_genotype)
+        prod_ready = ret_to_ready(prod_ready_ret)
+        production_genotype.production_fresh = prod_ready
+        production_genotype.save()
+        if prod_ready:
+            print('Genome %i:%i is ready.' % (self.id, production_genotype.id))
+        else:
+            print('Genome %i:%i is not ready: %s' \
+                % (self.id, production_genotype.id, prod_ready_ret[-1]))
         return prod_ready
 
 def genome_evolve_pool_helper(**kwargs):
