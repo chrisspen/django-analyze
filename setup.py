@@ -92,7 +92,7 @@ setup(
     packages = find_packages(),
     author = "Chris Spencer",
     author_email = "chrisspen@gmail.com",
-    description = "",
+    description = "A general purpose framework for training and testing classification algorithms.",
     license = "LGPL",
     url = "https://github.com/chrisspen/django-analyze",
     #https://pypi.python.org/pypi?%3Aaction=list_classifiers
