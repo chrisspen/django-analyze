@@ -106,6 +106,11 @@ class TestCommand(Command):
 #        print cmd
 #        os.system(cmd)
 
+try:
+    long_description = read_md('README.md')
+except IOError:
+    long_description = ''
+
 setup(
     name = "django-analyze",
     version = django_analyze.__version__,
@@ -113,7 +118,7 @@ setup(
     author = "Chris Spencer",
     author_email = "chrisspen@gmail.com",
     description = "A general purpose framework for training and testing classification algorithms.",
-    long_description=read_md('README.md'),
+    long_description = long_description,
     license = "LGPL",
     url = "https://github.com/chrisspen/django-analyze",
     #https://pypi.python.org/pypi?%3Aaction=list_classifiers
