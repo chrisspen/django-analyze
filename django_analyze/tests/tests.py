@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import datetime
 from datetime import timedelta
@@ -287,4 +288,41 @@ class Tests(TestCase):
         self.assertEqual(
             b,
             [0.0, 0.03580246913580247, 0.13950617283950617, 1.0])
+    
+    def test_PrefixStream(self):
+        from StringIO import StringIO
+        
+        _fout = StringIO()
+        fout = utils.PrefixStream(_fout, prefix='start: ')
+        for i in range(10):
+            fout.write('\rtest: %i' % i)
+            fout.flush()
+            #time.sleep(1)
+        fout.write('\ndone')
+        fout.flush()
+        v = _fout.getvalue()
+        #print(v)
+        self.assertEqual(re.sub(r'.*?\r', '', v), 'start: test: 9\nstart: done')
+
+        _fout = StringIO()
+        _stdout = sys.stdout
+        try:
+            sys.stdout = utils.PrefixStream(
+                stream=_fout,
+                prefix='start: ')
+            print('test1')
+            print('test2')
+            print('test3')
+        finally:
+            sys.stdout = _stdout
+        v = _fout.getvalue()
+#        print(v)
+        self.assertEqual(v, 'start: test1\nstart: test2\nstart: test3\n')
+    
+    def test_chunklist(self):
+        x = range(13)
+        y = list(utils.chunklist(x, 5))
+        #print(y)
+        self.assertEqual(y,
+            [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], [10, 11, 12]])
         

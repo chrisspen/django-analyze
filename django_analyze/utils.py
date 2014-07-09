@@ -1089,13 +1089,25 @@ class PrefixStream(object):
         self.stream = stream
         self.prefix = str(prefix)
         self.newline = True
-        
+    
     def write(self, *args):
-        if self.newline:
-            self.stream.write(self.prefix)
+        prefix = self.prefix
         s = ' '.join(map(str, args))
+#        s = s.strip()
+        
+        if s.startswith('\r'):
+            prefix = '\r' + prefix
+            s = s[1:]
+            
+        if s.startswith('\n') and s.strip():
+            prefix = '\n' + prefix
+            s = s[1:]
+            
+        if self.newline:
+            #print>>sys.stderr, repr(prefix)
+            self.stream.write(prefix)
         self.stream.write(s)
-        self.newline = s and s[-1] == '\n'
+        self.newline = s and (s[-1] == '\n' or prefix.startswith('\r'))
     
 #    def writelines(self, *args):
 #        self.stream.writelines(*args)
@@ -1108,4 +1120,7 @@ class PrefixStream(object):
     
     def close(self):
         self.stream.close()
-        
+
+def chunklist(lst, length):
+    return (lst[0+i:length+i] for i in range(0, len(lst), length))
+    
