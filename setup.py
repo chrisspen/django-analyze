@@ -11,7 +11,11 @@ try:
 except ImportError:
     print("Warning: pypandoc module not found, could not convert "
         "Markdown to RST")
-    read_md = lambda f: open(f, 'r').read()
+    def read_md(f):
+        try:
+            return open(f, 'r').read()
+        except IOError:
+            return ''
 
 def get_reqs():
     return [
